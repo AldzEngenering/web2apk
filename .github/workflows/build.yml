@@ -27,9 +27,17 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
 
     steps:
+      - name: Validate Inputs
+        run: |
+          if [ -z "${{ inputs.url }}" ] && [ -z "${{ inputs.zip_url }}" ]; then
+            echo "❌ Salah satu dari 'url' atau 'zip_url' harus diisi!"
+            exit 1
+          fi
+          echo "✅ Input valid."
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -57,7 +65,7 @@ jobs:
         run: |
           echo "📦 Updating package list..."
           sudo apt-get update -y || echo "⚠️ Update failed, continuing..."
-          
+
           echo "📦 Installing required packages..."
           sudo apt-get install -y \
             wget \
@@ -67,7 +75,7 @@ jobs:
             cmake \
             git \
             jq || echo "⚠️ Some packages failed, continuing..."
-          
+
           echo "✅ Tools installed successfully!"
           which wget unzip curl ninja cmake git jq || echo "⚠️ Some tools not found"
 
@@ -76,7 +84,22 @@ jobs:
       # ============================================================
       - name: Build from URL
         if: ${{ inputs.url != '' && inputs.url != 'null' }}
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          APP_URL: ${{ inputs.url }}
+          PACKAGE_NAME: ${{ inputs.package_name }}
         run: |
+          set -e
+
+          # Fungsi escape aman untuk digunakan sebagai pengganti sed
+          escape_sed() {
+            printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'
+          }
+
+          ESC_APP_NAME=$(escape_sed "$APP_NAME")
+          ESC_APP_URL=$(escape_sed "$APP_URL")
+          ESC_PACKAGE_NAME=$(escape_sed "$PACKAGE_NAME")
+
           echo "📱 Creating Flutter project..."
           flutter create --org com.web2apk --project-name myapp myapp
           cd myapp
@@ -120,7 +143,7 @@ jobs:
             @override
             Widget build(BuildContext context) {
               return MaterialApp(
-                title: '${{ inputs.app_name }}',
+                title: '__APP_NAME__',
                 theme: ThemeData.dark(),
                 home: const WebViewScreen(),
                 debugShowCheckedModeBanner: false,
@@ -151,7 +174,7 @@ jobs:
                     },
                   ),
                 )
-                ..loadRequest(Uri.parse('${{ inputs.url }}'));
+                ..loadRequest(Uri.parse('__APP_URL__'));
             }
 
             @override
@@ -173,13 +196,17 @@ jobs:
           }
           EOF
 
+          # Ganti placeholder dengan nilai asli (sudah di-escape agar aman)
+          sed -i "s/__APP_NAME__/${ESC_APP_NAME}/g" lib/main.dart
+          sed -i "s#__APP_URL__#${ESC_APP_URL}#g" lib/main.dart
+
           echo "📝 Configuring Android Manifest..."
           cat > android/app/src/main/AndroidManifest.xml << 'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="${{ inputs.package_name }}">
+              package="__PACKAGE_NAME__">
               <uses-permission android:name="android.permission.INTERNET" />
               <application
-                  android:label="${{ inputs.app_name }}"
+                  android:label="__APP_NAME__"
                   android:icon="@mipmap/ic_launcher"
                   android:usesCleartextTraffic="true"
                   android:theme="@style/Theme.AppCompat.NoActionBar">
@@ -203,8 +230,11 @@ jobs:
           </manifest>
           EOF
 
+          sed -i "s/__PACKAGE_NAME__/${ESC_PACKAGE_NAME}/g" android/app/src/main/AndroidManifest.xml
+          sed -i "s/__APP_NAME__/${ESC_APP_NAME}/g" android/app/src/main/AndroidManifest.xml
+
           echo "📝 Configuring build.gradle..."
-          sed -i "s/applicationId \".*\"/applicationId \"${{ inputs.package_name }}\"/g" android/app/build.gradle
+          sed -i "s/applicationId \".*\"/applicationId \"${ESC_PACKAGE_NAME}\"/g" android/app/build.gradle
           sed -i "s/minSdkVersion .*/minSdkVersion 21/g" android/app/build.gradle
           sed -i "s/targetSdkVersion .*/targetSdkVersion 34/g" android/app/build.gradle
           sed -i "s/versionCode .*/versionCode 1/g" android/app/build.gradle
@@ -226,32 +256,53 @@ jobs:
       # ============================================================
       - name: Build from ZIP
         if: ${{ inputs.zip_url != '' && inputs.zip_url != 'null' }}
+        env:
+          ZIP_URL: ${{ inputs.zip_url }}
         run: |
+          set -e
           echo "📦 Downloading ZIP..."
           mkdir -p workspace
           cd workspace
-          wget -O project.zip "${{ inputs.zip_url }}"
+          wget -O project.zip "$ZIP_URL"
           unzip -o project.zip -d project/
-          
-          if [ -f "project/pubspec.yaml" ]; then
-            cd project
-          elif [ -f "project/*/pubspec.yaml" ]; then
-            cd project/*/
-          else
+
+          # Cari folder yang benar-benar berisi pubspec.yaml (support nested folder di dalam zip)
+          PUBSPEC_PATH=$(find project -maxdepth 3 -name "pubspec.yaml" | head -n 1)
+
+          if [ -z "$PUBSPEC_PATH" ]; then
             echo "❌ pubspec.yaml not found!"
             exit 1
           fi
-          
+
+          PROJECT_DIR=$(dirname "$PUBSPEC_PATH")
+          echo "📂 Project ditemukan di: $PROJECT_DIR"
+          cd "$PROJECT_DIR"
+
           echo "📦 Getting dependencies..."
           flutter pub get
-          
+
           echo "🧹 Cleaning..."
           flutter clean
-          
+
           echo "🔨 Building APK..."
           flutter build apk --release
-          
+
           echo "✅ Build complete!"
+
+      # ============================================================
+      # LOCATE APK (agar step berikutnya tidak hardcode path)
+      # ============================================================
+      - name: Locate APK
+        if: success()
+        id: locate_apk
+        run: |
+          APK_PATH=$(find . -path "*/build/app/outputs/flutter-apk/app-release.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "❌ APK tidak ditemukan!"
+            exit 1
+          fi
+          echo "✅ APK ditemukan: $APK_PATH"
+          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
 
       # ============================================================
       # UPLOAD & SEND
@@ -261,9 +312,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: apk-builds
-          path: |
-            myapp/build/app/outputs/flutter-apk/*.apk
-            workspace/project/build/app/outputs/flutter-apk/*.apk
+          path: ${{ steps.locate_apk.outputs.apk_path }}
           retention-days: 7
 
       - name: Send APK to Telegram
@@ -278,15 +327,7 @@ jobs:
             📱 Nama: ${{ inputs.app_name }}
             📦 Package: ${{ inputs.package_name }}
             📤 Mengirim APK...
-          document: myapp/build/app/outputs/flutter-apk/app-release.apk
-
-      - name: Send ARM64 APK
-        if: success()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ inputs.user_id }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          document: myapp/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          document: ${{ steps.locate_apk.outputs.apk_path }}
 
       - name: Notify Failure
         if: failure()
