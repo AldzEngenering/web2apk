@@ -254,8 +254,7 @@ jobs:
           # 🔥 ANDROID MANIFEST
           # ============================================================
           cat > android/app/src/main/AndroidManifest.xml << 'EOF'
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="__PACKAGE_NAME__">
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
               
@@ -303,10 +302,9 @@ jobs:
           EOF
 
           # Ekstrak domain untuk network security
-          DOMAIN=$(echo "$APP_URL" | sed -e 's|https\?://||' -e 's|/.*||')
+          DOMAIN=$(echo "$APP_URL" | sed -e 's|https\?://||' -e 's|/.*||' -e 's|:.*||')
           sed -i "s/__APP_URL_DOMAIN__/$DOMAIN/g" android/app/src/main/res/xml/network_security_config.xml
 
-          sed -i "s/__PACKAGE_NAME__/${ESC_PACKAGE_NAME}/g" android/app/src/main/AndroidManifest.xml
           sed -i "s/__APP_NAME__/${ESC_APP_NAME}/g" android/app/src/main/AndroidManifest.xml
 
           # ============================================================
@@ -321,6 +319,7 @@ jobs:
           # ============================================================
           # 🔥 BUILD
           # ============================================================
+          chmod +x android/gradlew
           flutter pub get
           flutter clean
           flutter build apk --release
@@ -357,11 +356,12 @@ jobs:
             sed -i '/dependencies:/a\  webview_flutter: ^4.7.0\n  webview_flutter_android: ^3.12.0\n  webview_flutter_wkwebview: ^3.9.0' pubspec.yaml
           fi
 
-          if [ -d "../../android/app/src/main/res" ]; then
+          if [ -d "../../../android/app/src/main/res" ]; then
             mkdir -p android/app/src/main/res
-            cp -r ../../android/app/src/main/res/* android/app/src/main/res/ 2>/dev/null || true
+            cp -r ../../../android/app/src/main/res/* android/app/src/main/res/ 2>/dev/null || true
           fi
 
+          chmod +x android/gradlew
           flutter pub get
           flutter clean
           flutter build apk --release
@@ -416,4 +416,4 @@ jobs:
 
             📱 Nama: ${{ inputs.app_name }}
             👤 User: ${{ inputs.user_id }}
-            📦 Package: ${{ inputs.package_name }}
+            📦 Package: ${{ inputs.package_name }} 
