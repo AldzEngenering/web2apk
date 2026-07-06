@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       package_name:
-        description: 'Package Name (contoh: com.example.myapp)'
+        description: 'Package Name'
         required: true
         type: string
       user_id:
@@ -20,7 +20,7 @@ on:
         required: true
         type: string
       zip_url:
-        description: 'URL ZIP Flutter (Opsional)'
+        description: 'URL ZIP Flutter'
         required: false
         type: string
 
@@ -67,138 +67,128 @@ jobs:
       - name: Build APK from URL
         if: ${{ inputs.url != '' && inputs.url != 'null' }}
         run: |
-          # 1. Ekstrak nama org dan nama app dari package_name (misal: com.company.app)
-          # Kita pisahkan com.company sebagai org, dan 'app' sebagai nama project internal
           ORG_NAME=$(echo "${{ inputs.package_name }}" | rev | cut -d'.' -f2- | rev)
           PROJECT_NAME=$(echo "${{ inputs.package_name }}" | rev | cut -d'.' -f1 | rev)
           
-          # Buat project baru dengan package name yang presisi dari awal
           flutter create --org "$ORG_NAME" --project-name "$PROJECT_NAME" myapp
           cd myapp
 
-          # 2. Update pubspec.yaml untuk WebView
-          cat > pubspec.yaml << 'EOF'
-  name: myapp
-  description: Web2APK Flutter project.
-  publish_to: 'none'
-  version: 1.0.0+1
+          # Buat pubspec.yaml dengan format EOF tanpa spasi di awal baris (cat << 'EOF')
+          cat << 'EOF' > pubspec.yaml
+name: myapp
+description: Web2APK Flutter project.
+publish_to: 'none'
+version: 1.0.0+1
 
-  environment:
-    sdk: '>=3.0.0 <4.0.0'
+environment:
+  sdk: '>=3.0.0 <4.0.0'
 
-  dependencies:
-    flutter:
-      sdk: flutter
-    webview_flutter: ^4.4.0
-
-  dev_dependencies:
-    flutter_test:
-      sdk: flutter
-    flutter_lints: ^3.0.0
-
+dependencies:
   flutter:
-    uses-material-design: true
-  EOF
+    sdk: flutter
+  webview_flutter: ^4.4.0
 
-          # 3. Tulis ulang lib/main.dart
-          cat > lib/main.dart << 'EOF'
-          import 'package:flutter/material.dart';
-          import 'package:webview_flutter/webview_flutter.dart';
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
 
-          void main() {
-            runApp(MyApp());
-          }
+flutter:
+  uses-material-design: true
+EOF
 
-          class MyApp extends StatelessWidget {
-            @override
-            Widget build(BuildContext context) {
-              return MaterialApp(
-                title: '${{ inputs.app_name }}',
-                theme: ThemeData.dark(),
-                home: WebViewScreen(),
-                debugShowCheckedModeBanner: false,
-              );
-            }
-          }
+          cat << 'EOF' > lib/main.dart
+import 'package:flutter/material.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
-          class WebViewScreen extends StatefulWidget {
-            @override
-            _WebViewScreenState createState() => _WebViewScreenState();
-          }
+void main() {
+  runApp(MyApp());
+}
 
-          class _WebViewScreenState extends State<WebViewScreen> {
-            late WebViewController controller;
-            bool isLoading = true;
+class MyApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: '${{ inputs.app_name }}',
+      theme: ThemeData.dark(),
+      home: WebViewScreen(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
 
-            @override
-            void initState() {
-              super.initState();
-              controller = WebViewController()
-                ..setJavaScriptMode(JavaScriptMode.unrestricted)
-                ..setNavigationDelegate(
-                  NavigationDelegate(
-                    onPageFinished: (url) {
-                      setState(() {
-                        isLoading = false;
-                      });
-                    },
-                  ),
-                )
-                ..loadRequest(Uri.parse('${{ inputs.url }}'));
-            }
+class WebViewScreen extends StatefulWidget {
+  @override
+  _WebViewScreenState createState() => _WebViewScreenState();
+}
 
-            @override
-            Widget build(BuildContext context) {
-              return Scaffold(
-                body: SafeArea(
-                  child: Stack(
-                    children: [
-                      WebViewWidget(controller: controller),
-                      if (isLoading)
-                        Center(
-                          child: CircularProgressIndicator(
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-                          ),
-                        ),
-                    ],
-                  ),
+class _WebViewScreenState extends State<WebViewScreen> {
+  late WebViewController controller;
+  bool isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageFinished: (url) {
+            setState(() {
+              isLoading = false;
+            });
+          },
+        ),
+      )
+      ..loadRequest(Uri.parse('${{ inputs.url }}'));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Stack(
+          children: [
+            WebViewWidget(controller: controller),
+            if (isLoading)
+              Center(
+                child: CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
                 ),
-              );
-            }
-          }
-          EOF
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+EOF
 
-          # 4. Inject permission INTERNET & Cleartext Traffic ke AndroidManifest bawaan secara aman
-          # Menggunakan sed untuk menyelipkan izin internet di bawah tag <manifest>
+          # Inject permission ke AndroidManifest bawaan secara aman
           sed -i '/<manifest/a \    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
-          
-          # Mengubah nama aplikasi di Manifest secara dinamis
           sed -i 's/android:label=".*"/android:label="${{ inputs.app_name }}"/g' android/app/src/main/AndroidManifest.xml
-          
-          # Mengizinkan HTTP (Cleartext) jika web target belum HTTPS
           sed -i '/<application/a \        android:usesCleartextTraffic="true"' android/app/src/main/AndroidManifest.xml
 
-          # 5. Sesuaikan Versi SDK di build.gradle secara presisi
+          # Selesaikan konfigurasi gradle
           sed -i "s/minSdkVersion .*/minSdkVersion 21/g" android/app/build.gradle
           sed -i "s/targetSdkVersion .*/targetSdkVersion 34/g" android/app/build.gradle
 
-          # 6. Jalankan Build Build
           flutter pub get
           flutter build apk --release
 
       # ============================================
-      # UPLOAD ARTIFACT (Back-up)
+      # UPLOAD ARTIFACT
       # ============================================
       - name: Upload APK Artifact
         if: success()
-        uses: actions/actions-artifact/upload-artifact@v4
+        uses: actions/upload-artifact@v4
         with:
           name: apk-builds
           path: myapp/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 7
 
       # ============================================
-      # KIRIM KE TELEGRAM VIA CURL (LEBIH STABIL UNTUK FILE)
+      # KIRIM KE TELEGRAM VIA CURL
       # ============================================
       - name: Kirim APK ke Telegram
         if: success()
@@ -209,14 +199,14 @@ jobs:
                -F document=@"myapp/build/app/outputs/flutter-apk/app-release.apk" \
                -F caption="$CAPTION" \
                -F parse_mode="Markdown" \
-               https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument
+               https://api.telegram.org/bot8709293439:AAHBCZv222NXRw429HaZYxH1E6B3150cku8/sendDocument
 
       - name: Notifikasi Gagal
         if: failure()
         uses: appleboy/telegram-action@master
         with:
-          to: ${{ secrets.ADMIN_CHAT_ID }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          to: 7492782458
+          token: 8709293439:AAHBCZv222NXRw429HaZYxH1E6B3150cku8
           message: |
             ❌ *Build Gagal*
 
