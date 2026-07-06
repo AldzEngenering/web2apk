@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       package_name:
-        description: 'Package Name'
+        description: 'Package Name (contoh: com.example.myapp)'
         required: true
         type: string
       user_id:
@@ -20,13 +20,13 @@ on:
         required: true
         type: string
       zip_url:
-        description: 'URL ZIP Flutter'
+        description: 'URL ZIP Flutter (Opsional)'
         required: false
         type: string
 
 env:
   JAVA_VERSION: '17'
-  FLUTTER_VERSION: '3.19.6'  # Versi paling stabil
+  FLUTTER_VERSION: '3.19.6'
 
 jobs:
   build:
@@ -62,51 +62,45 @@ jobs:
           sudo apt-get install -y ninja-build cmake git wget unzip jq curl
 
       # ============================================
-      # 🔥 TEST: Buat project Flutter dulu
-      # ============================================
-      - name: Test Flutter Project
-        run: |
-          flutter create --org com.web2apk test_project
-          cd test_project
-          flutter pub get
-          flutter build apk --debug
-          echo "✅ Flutter project berhasil dibuat!"
-
-      # ============================================
-      # BUILD WEBSITE TO APK (PAKAI TEMPLATE TERBUKTI)
+      # BUILD WEBSITE TO APK
       # ============================================
       - name: Build APK from URL
         if: ${{ inputs.url != '' && inputs.url != 'null' }}
         run: |
-          # BUAT PROJECT
-          flutter create --org com.web2apk myapp
+          # 1. Ekstrak nama org dan nama app dari package_name (misal: com.company.app)
+          # Kita pisahkan com.company sebagai org, dan 'app' sebagai nama project internal
+          ORG_NAME=$(echo "${{ inputs.package_name }}" | rev | cut -d'.' -f2- | rev)
+          PROJECT_NAME=$(echo "${{ inputs.package_name }}" | rev | cut -d'.' -f1 | rev)
+          
+          # Buat project baru dengan package name yang presisi dari awal
+          flutter create --org "$ORG_NAME" --project-name "$PROJECT_NAME" myapp
           cd myapp
 
-          # PUBSPEC.YAML - PAKAI YANG SUDAH TERBUKTI
+          # 2. Update pubspec.yaml untuk WebView
           cat > pubspec.yaml << 'EOF'
-          name: myapp
-          description: A new Flutter project.
-          publish_to: 'none'
-          version: 1.0.0+1
+  name: myapp
+  description: Web2APK Flutter project.
+  publish_to: 'none'
+  version: 1.0.0+1
 
-          environment:
-            sdk: '>=3.0.0 <4.0.0'
+  environment:
+    sdk: '>=3.0.0 <4.0.0'
 
-          dependencies:
-            flutter:
-              sdk: flutter
-            webview_flutter: ^4.4.0
+  dependencies:
+    flutter:
+      sdk: flutter
+    webview_flutter: ^4.4.0
 
-          dev_dependencies:
-            flutter_test:
-              sdk: flutter
-            flutter_lints: ^2.0.0
+  dev_dependencies:
+    flutter_test:
+      sdk: flutter
+    flutter_lints: ^3.0.0
 
-          flutter:
-            uses-material-design: true
-          EOF
+  flutter:
+    uses-material-design: true
+  EOF
 
-          # MAIN.DART - PAKAI YANG SUDAH TERBUKTI
+          # 3. Tulis ulang lib/main.dart
           cat > lib/main.dart << 'EOF'
           import 'package:flutter/material.dart';
           import 'package:webview_flutter/webview_flutter.dart';
@@ -156,97 +150,66 @@ jobs:
             @override
             Widget build(BuildContext context) {
               return Scaffold(
-                body: Stack(
-                  children: [
-                    WebViewWidget(controller: controller),
-                    if (isLoading)
-                      Center(
-                        child: CircularProgressIndicator(
-                          valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                body: SafeArea(
+                  child: Stack(
+                    children: [
+                      WebViewWidget(controller: controller),
+                      if (isLoading)
+                        Center(
+                          child: CircularProgressIndicator(
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                          ),
                         ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
               );
             }
           }
           EOF
 
-          # ANDROID MANIFEST
-          cat > android/app/src/main/AndroidManifest.xml << 'EOF'
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="${{ inputs.package_name }}">
-              <uses-permission android:name="android.permission.INTERNET" />
-              <application
-                  android:label="${{ inputs.app_name }}"
-                  android:name="${applicationName}"
-                  android:icon="@mipmap/ic_launcher"
-                  android:usesCleartextTraffic="true"
-                  android:allowBackup="true"
-                  android:theme="@style/Theme.AppCompat.NoActionBar">
-                  <activity
-                      android:name=".MainActivity"
-                      android:exported="true"
-                      android:launchMode="singleTop"
-                      android:theme="@style/Theme.AppCompat.NoActionBar"
-                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
-                      android:hardwareAccelerated="true"
-                      android:windowSoftInputMode="adjustResize">
-                      <meta-data
-                          android:name="io.flutter.embedding.android.NormalTheme"
-                          android:resource="@style/NormalTheme" />
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-                  <meta-data
-                      android:name="flutterEmbedding"
-                      android:value="2" />
-              </application>
-          </manifest>
-          EOF
+          # 4. Inject permission INTERNET & Cleartext Traffic ke AndroidManifest bawaan secara aman
+          # Menggunakan sed untuk menyelipkan izin internet di bawah tag <manifest>
+          sed -i '/<manifest/a \    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
+          
+          # Mengubah nama aplikasi di Manifest secara dinamis
+          sed -i 's/android:label=".*"/android:label="${{ inputs.app_name }}"/g' android/app/src/main/AndroidManifest.xml
+          
+          # Mengizinkan HTTP (Cleartext) jika web target belum HTTPS
+          sed -i '/<application/a \        android:usesCleartextTraffic="true"' android/app/src/main/AndroidManifest.xml
 
-          # UPDATE BUILD.GRADLE
-          sed -i "s/applicationId \".*\"/applicationId \"${{ inputs.package_name }}\"/g" android/app/build.gradle
+          # 5. Sesuaikan Versi SDK di build.gradle secara presisi
           sed -i "s/minSdkVersion .*/minSdkVersion 21/g" android/app/build.gradle
           sed -i "s/targetSdkVersion .*/targetSdkVersion 34/g" android/app/build.gradle
-          sed -i "s/versionCode .*/versionCode 1/g" android/app/build.gradle
-          sed -i "s/versionName .*/versionName \"1.0.0\"/g" android/app/build.gradle
 
-          # GET DEPENDENCIES & BUILD
+          # 6. Jalankan Build Build
           flutter pub get
-          flutter clean
           flutter build apk --release
 
       # ============================================
-      # UPLOAD ARTIFACT
+      # UPLOAD ARTIFACT (Back-up)
       # ============================================
-      - name: Upload APK
+      - name: Upload APK Artifact
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/actions-artifact/upload-artifact@v4
         with:
           name: apk-builds
-          path: |
-            myapp/build/app/outputs/flutter-apk/*.apk
+          path: myapp/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 7
 
       # ============================================
-      # KIRIM KE TELEGRAM
+      # KIRIM KE TELEGRAM VIA CURL (LEBIH STABIL UNTUK FILE)
       # ============================================
       - name: Kirim APK ke Telegram
         if: success()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ inputs.user_id }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          message: |
-            ✅ *Build Berhasil!*
-
-            📱 Nama: ${{ inputs.app_name }}
-            📦 Package: ${{ inputs.package_name }}
-            📤 Mengirim APK...
-          document: myapp/build/app/outputs/flutter-apk/app-release.apk
+        run: |
+          CAPTION=$(printf "✅ *Build Berhasil!*\n\n📱 *Nama:* ${{ inputs.app_name }}\n📦 *Package:* \`${{ inputs.package_name }}\`")
+          
+          curl -F chat_id="${{ inputs.user_id }}" \
+               -F document=@"myapp/build/app/outputs/flutter-apk/app-release.apk" \
+               -F caption="$CAPTION" \
+               -F parse_mode="Markdown" \
+               https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument
 
       - name: Notifikasi Gagal
         if: failure()
