@@ -1,0 +1,286 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'Nama Aplikasi'
+        required: true
+        default: 'MyApp'
+      package_name:
+        description: 'Package Name (com.example.app)'
+        required: true
+        default: 'com.example.myapp'
+      url:
+        description: 'Website URL (untuk build WebView)'
+        required: false
+        default: ''
+      zip_url:
+        description: 'URL ZIP Project Flutter (untuk build Flutter)'
+        required: false
+        default: ''
+      user_id:
+        description: 'Telegram User ID'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # ========== 1. CHECKOUT ==========
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ========== 2. SETUP JAVA ==========
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # ========== 3. SETUP ANDROID SDK ==========
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 33
+          target: default
+          arch: x86_64
+
+      # ========== 4. SETUP FLUTTER ==========
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: 'stable'
+
+      # ========== 5. SETUP NODE.JS ==========
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      # ========== 6. DOWNLOAD PROJECT ==========
+      - name: Download Project
+        run: |
+          mkdir -p project
+          cd project
+          
+          # Cek apakah zip_url ada (Flutter project)
+          if [ -n "${{ github.event.inputs.zip_url }}" ]; then
+            echo "📦 Downloading Flutter project from ZIP..."
+            wget -O project.zip "${{ github.event.inputs.zip_url }}"
+            unzip -q project.zip -d .
+            rm project.zip
+            echo "✅ Flutter project downloaded"
+          else
+            echo "🌐 Creating WebView project from URL..."
+            echo "URL: ${{ github.event.inputs.url }}"
+          fi
+
+      # ========== 7. BUILD FLUTTER (jika ada zip_url) ==========
+      - name: Build Flutter APK
+        if: github.event.inputs.zip_url != ''
+        working-directory: project
+        run: |
+          echo "🔨 Building Flutter APK..."
+          flutter pub get
+          flutter clean
+          flutter build apk --release --split-per-abi
+          echo "✅ Flutter build completed"
+          ls -la build/app/outputs/apk/release/
+
+      # ========== 8. BUILD WEBVIEW (jika ada url) ==========
+      - name: Build WebView APK
+        if: github.event.inputs.url != '' && github.event.inputs.zip_url == ''
+        run: |
+          echo "🌐 Building WebView APK..."
+          
+          # Buat project WebView sederhana
+          mkdir -p webview-project/app/src/main/java/com/webview/
+          mkdir -p webview-project/app/src/main/res/layout/
+          mkdir -p webview-project/app/src/main/res/values/
+          
+          # Buat AndroidManifest.xml
+          cat > webview-project/app/src/main/AndroidManifest.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="${{ github.event.inputs.package_name }}">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="${{ github.event.inputs.app_name }}"
+                  android:theme="@style/Theme.AppCompat.Light.NoActionBar"
+                  android:usesCleartextTraffic="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:configChanges="orientation|screenSize"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          
+          # Buat MainActivity.java
+          cat > webview-project/app/src/main/java/com/webview/MainActivity.java << 'EOF'
+          package ${{ github.event.inputs.package_name }};
+          
+          import android.os.Bundle;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import androidx.appcompat.app.AppCompatActivity;
+          
+          public class MainActivity extends AppCompatActivity {
+              private WebView webView;
+              
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  setContentView(R.layout.activity_main);
+                  
+                  webView = findViewById(R.id.webView);
+                  WebSettings webSettings = webView.getSettings();
+                  webSettings.setJavaScriptEnabled(true);
+                  webSettings.setDomStorageEnabled(true);
+                  webSettings.setLoadWithOverviewMode(true);
+                  webSettings.setUseWideViewPort(true);
+                  
+                  webView.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                          view.loadUrl(url);
+                          return true;
+                      }
+                  });
+                  
+                  webView.loadUrl("${{ github.event.inputs.url }}");
+              }
+              
+              @Override
+              public void onBackPressed() {
+                  if (webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+          }
+          EOF
+          
+          # Buat activity_main.xml
+          cat > webview-project/app/src/main/res/layout/activity_main.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:orientation="vertical">
+              <WebView
+                  android:id="@+id/webView"
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent" />
+          </LinearLayout>
+          EOF
+          
+          # Buat build.gradle
+          cat > webview-project/app/build.gradle << 'EOF'
+          apply plugin: 'com.android.application'
+          
+          android {
+              compileSdk 33
+              namespace "${{ github.event.inputs.package_name }}"
+              
+              defaultConfig {
+                  applicationId "${{ github.event.inputs.package_name }}"
+                  minSdk 21
+                  targetSdk 33
+                  versionCode 1
+                  versionName "1.0"
+              }
+              
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+                  }
+              }
+          }
+          
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'androidx.webkit:webkit:1.8.0'
+          }
+          EOF
+          
+          # Buat project build.gradle
+          cat > webview-project/build.gradle << 'EOF'
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:7.4.2'
+              }
+          }
+          
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          EOF
+          
+          # Buat settings.gradle
+          cat > webview-project/settings.gradle << 'EOF'
+          rootProject.name = "WebViewApp"
+          include ':app'
+          EOF
+          
+          # Build APK
+          cd webview-project
+          chmod +x gradlew 2>/dev/null || true
+          ./gradlew assembleRelease --no-daemon || gradle assembleRelease --no-daemon
+          
+          echo "✅ WebView build completed"
+          ls -la app/build/outputs/apk/release/
+
+      # ========== 9. UPLOAD ARTIFACT ==========
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}
+          path: |
+            project/build/app/outputs/apk/release/*.apk
+            webview-project/app/build/outputs/apk/release/*.apk
+          retention-days: 7
+
+      # ========== 10. NOTIFIKASI TELEGRAM ==========
+      - name: Notify Telegram
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            STATUS="✅ Build Berhasil!"
+          else
+            STATUS="❌ Build Gagal!"
+          fi
+          
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ github.event.inputs.user_id }}" \
+            -d text="$STATUS\n\n📱 ${{ github.event.inputs.app_name }}\n🆔 Job: ${{ github.run_id }}\n📌 Download di Actions" \
+            -d parse_mode="HTML"
+
+      # ========== 11. CLEANUP ==========
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf project webview-project
+          echo "🧹 Cleanup completed"
