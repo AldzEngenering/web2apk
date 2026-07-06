@@ -55,7 +55,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.19.6'
+          flutter-version: '3.24.0'
           channel: 'stable'
 
       - name: Setup Android SDK
@@ -72,7 +72,7 @@ jobs:
           sudo apt-get install -y wget unzip curl ninja-build cmake git jq imagemagick
 
       # ============================================================
-      # 🔥 STEP ICON
+      # STEP ICON
       # ============================================================
       - name: Process Icon
         if: ${{ inputs.icon_data != '' && inputs.icon_data != 'null' }}
@@ -87,14 +87,12 @@ jobs:
 
           echo "${{ inputs.icon_data }}" | base64 -d > icon_raw.png
 
-          # Resize untuk Android
           convert icon_raw.png -resize 48x48 android/app/src/main/res/mipmap-mdpi/ic_launcher.png
           convert icon_raw.png -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher.png
           convert icon_raw.png -resize 96x96 android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
           convert icon_raw.png -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
           convert icon_raw.png -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
           
-          # Icon round
           convert icon_raw.png -resize 48x48 android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png
           convert icon_raw.png -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
           convert icon_raw.png -resize 96x96 android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
@@ -126,14 +124,16 @@ jobs:
           flutter create --org com.web2apk --project-name myapp myapp
           cd myapp
 
-          # Copy icon jika ada
           if [ -d "../android/app/src/main/res" ]; then
             cp -r ../android/app/src/main/res/* android/app/src/main/res/ 2>/dev/null || true
           fi
 
+          # ============================================================
+          # 🔥 PUBSPEC.YAML DENGAN DEPENDENSI WEBVIEW TERBARU
+          # ============================================================
           cat > pubspec.yaml << 'EOF'
           name: myapp
-          description: WebView App
+          description: WebView App - Built by Web2APK
           publish_to: 'none'
           version: 1.0.0+1
 
@@ -143,17 +143,24 @@ jobs:
           dependencies:
             flutter:
               sdk: flutter
-            webview_flutter: ^4.4.0
+            
+            # 🔥 WebView Dependencies Terbaru
+            webview_flutter: ^4.7.0
+            webview_flutter_android: ^3.12.0
+            webview_flutter_wkwebview: ^3.9.0
 
           dev_dependencies:
             flutter_test:
               sdk: flutter
-            flutter_lints: ^2.0.0
+            flutter_lints: ^3.0.0
 
           flutter:
             uses-material-design: true
           EOF
 
+          # ============================================================
+          # 🔥 MAIN.DART DENGAN WEBVIEW TERBARU
+          # ============================================================
           cat > lib/main.dart << 'EOF'
           import 'package:flutter/material.dart';
           import 'package:webview_flutter/webview_flutter.dart';
@@ -190,16 +197,34 @@ jobs:
             @override
             void initState() {
               super.initState();
+
+              // 🔥 Inisialisasi WebView dengan cara terbaru
               controller = WebViewController()
                 ..setJavaScriptMode(JavaScriptMode.unrestricted)
+                ..setBackgroundColor(const Color(0x00000000))
                 ..setNavigationDelegate(
                   NavigationDelegate(
-                    onPageFinished: (url) {
-                      setState(() => isLoading = false);
+                    onProgress: (int progress) {
+                      // Update progress jika diperlukan
+                    },
+                    onPageStarted: (String url) {
+                      setState(() {
+                        isLoading = true;
+                      });
+                    },
+                    onPageFinished: (String url) {
+                      setState(() {
+                        isLoading = false;
+                      });
+                    },
+                    onWebResourceError: (WebResourceError error) {
+                      // Handle error
                     },
                   ),
                 )
-                ..loadRequest(Uri.parse('__APP_URL__'));
+                ..loadRequest(
+                  Uri.parse('__APP_URL__'),
+                );
             }
 
             @override
@@ -212,6 +237,7 @@ jobs:
                       const Center(
                         child: CircularProgressIndicator(
                           valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                          strokeWidth: 3.0,
                         ),
                       ),
                   ],
@@ -224,16 +250,23 @@ jobs:
           sed -i "s/__APP_NAME__/${ESC_APP_NAME}/g" lib/main.dart
           sed -i "s#__APP_URL__#${ESC_APP_URL}#g" lib/main.dart
 
+          # ============================================================
+          # 🔥 ANDROID MANIFEST
+          # ============================================================
           cat > android/app/src/main/AndroidManifest.xml << 'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="__PACKAGE_NAME__">
               <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              
               <application
                   android:label="__APP_NAME__"
                   android:icon="@mipmap/ic_launcher"
                   android:roundIcon="@mipmap/ic_launcher_round"
                   android:usesCleartextTraffic="true"
-                  android:theme="@style/Theme.AppCompat.NoActionBar">
+                  android:theme="@style/Theme.AppCompat.NoActionBar"
+                  android:networkSecurityConfig="@xml/network_security_config">
+                  
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
@@ -247,6 +280,7 @@ jobs:
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
                   </activity>
+                  
                   <meta-data
                       android:name="flutterEmbedding"
                       android:value="2" />
@@ -254,15 +288,39 @@ jobs:
           </manifest>
           EOF
 
+          # ============================================================
+          # 🔥 NETWORK SECURITY CONFIG (untuk HTTP support)
+          # ============================================================
+          mkdir -p android/app/src/main/res/xml
+          cat > android/app/src/main/res/xml/network_security_config.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <network-security-config>
+              <domain-config cleartextTrafficPermitted="true">
+                  <domain includeSubdomains="true">__APP_URL_DOMAIN__</domain>
+              </domain-config>
+              <base-config cleartextTrafficPermitted="true" />
+          </network-security-config>
+          EOF
+
+          # Ekstrak domain untuk network security
+          DOMAIN=$(echo "$APP_URL" | sed -e 's|https\?://||' -e 's|/.*||')
+          sed -i "s/__APP_URL_DOMAIN__/$DOMAIN/g" android/app/src/main/res/xml/network_security_config.xml
+
           sed -i "s/__PACKAGE_NAME__/${ESC_PACKAGE_NAME}/g" android/app/src/main/AndroidManifest.xml
           sed -i "s/__APP_NAME__/${ESC_APP_NAME}/g" android/app/src/main/AndroidManifest.xml
 
+          # ============================================================
+          # 🔥 BUILD.GRADLE
+          # ============================================================
           sed -i "s/applicationId \".*\"/applicationId \"${ESC_PACKAGE_NAME}\"/g" android/app/build.gradle
           sed -i "s/minSdkVersion .*/minSdkVersion 21/g" android/app/build.gradle
           sed -i "s/targetSdkVersion .*/targetSdkVersion 34/g" android/app/build.gradle
           sed -i "s/versionCode .*/versionCode 1/g" android/app/build.gradle
           sed -i "s/versionName .*/versionName \"1.0.0\"/g" android/app/build.gradle
 
+          # ============================================================
+          # 🔥 BUILD
+          # ============================================================
           flutter pub get
           flutter clean
           flutter build apk --release
@@ -291,7 +349,14 @@ jobs:
           echo "📂 Project ditemukan di: $PROJECT_DIR"
           cd "$PROJECT_DIR"
 
-          # Copy icon jika ada
+          # 🔥 Update dependencies di pubspec.yaml project user
+          if grep -q "webview_flutter:" pubspec.yaml; then
+            echo "✅ webview_flutter sudah ada, skip update"
+          else
+            echo "📝 Menambahkan webview_flutter ke pubspec.yaml..."
+            sed -i '/dependencies:/a\  webview_flutter: ^4.7.0\n  webview_flutter_android: ^3.12.0\n  webview_flutter_wkwebview: ^3.9.0' pubspec.yaml
+          fi
+
           if [ -d "../../android/app/src/main/res" ]; then
             mkdir -p android/app/src/main/res
             cp -r ../../android/app/src/main/res/* android/app/src/main/res/ 2>/dev/null || true
@@ -336,6 +401,7 @@ jobs:
             📱 Nama: ${{ inputs.app_name }}
             📦 Package: ${{ inputs.package_name }}
             🎨 Icon: ${{ inputs.icon_data != '' && 'Custom ✅' || 'Default' }}
+            🌐 WebView: v4.7.0
             📤 Mengirim APK...
           document: ${{ steps.locate_apk.outputs.apk_path }}
 
@@ -350,4 +416,4 @@ jobs:
 
             📱 Nama: ${{ inputs.app_name }}
             👤 User: ${{ inputs.user_id }}
-            📦 Package: ${{ inputs.package_name }} mm
+            📦 Package: ${{ inputs.package_name }}
