@@ -23,6 +23,14 @@ on:
         description: 'URL ZIP Flutter Project'
         required: false
         type: string
+      job_id:
+        description: 'Job ID'
+        required: false
+        type: string
+      icon_data:
+        description: 'Base64 Icon Data'
+        required: false
+        type: string
 
 jobs:
   build:
@@ -58,26 +66,42 @@ jobs:
             platforms;android-34
             build-tools;34.0.0
 
-      # ============================================================
-      # 🔥 FIX: Install Tools dengan retry dan verbose
-      # ============================================================
       - name: Install Tools
         run: |
-          echo "📦 Updating package list..."
-          sudo apt-get update -y || echo "⚠️ Update failed, continuing..."
+          sudo apt-get update -y
+          sudo apt-get install -y wget unzip curl ninja-build cmake git jq imagemagick
 
-          echo "📦 Installing required packages..."
-          sudo apt-get install -y \
-            wget \
-            unzip \
-            curl \
-            ninja-build \
-            cmake \
-            git \
-            jq || echo "⚠️ Some packages failed, continuing..."
+      # ============================================================
+      # 🔥 STEP ICON
+      # ============================================================
+      - name: Process Icon
+        if: ${{ inputs.icon_data != '' && inputs.icon_data != 'null' }}
+        run: |
+          echo "🎨 Processing custom icon..."
+          
+          mkdir -p android/app/src/main/res/mipmap-hdpi
+          mkdir -p android/app/src/main/res/mipmap-mdpi
+          mkdir -p android/app/src/main/res/mipmap-xhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxxhdpi
 
-          echo "✅ Tools installed successfully!"
-          which wget unzip curl ninja cmake git jq || echo "⚠️ Some tools not found"
+          echo "${{ inputs.icon_data }}" | base64 -d > icon_raw.png
+
+          # Resize untuk Android
+          convert icon_raw.png -resize 48x48 android/app/src/main/res/mipmap-mdpi/ic_launcher.png
+          convert icon_raw.png -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+          convert icon_raw.png -resize 96x96 android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          convert icon_raw.png -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          convert icon_raw.png -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          
+          # Icon round
+          convert icon_raw.png -resize 48x48 android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png
+          convert icon_raw.png -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
+          convert icon_raw.png -resize 96x96 android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
+          convert icon_raw.png -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png
+          convert icon_raw.png -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
+
+          echo "✅ Icon processed!"
 
       # ============================================================
       # BUILD DARI URL
@@ -91,7 +115,6 @@ jobs:
         run: |
           set -e
 
-          # Fungsi escape aman untuk digunakan sebagai pengganti sed
           escape_sed() {
             printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'
           }
@@ -100,11 +123,14 @@ jobs:
           ESC_APP_URL=$(escape_sed "$APP_URL")
           ESC_PACKAGE_NAME=$(escape_sed "$PACKAGE_NAME")
 
-          echo "📱 Creating Flutter project..."
           flutter create --org com.web2apk --project-name myapp myapp
           cd myapp
 
-          echo "📝 Configuring pubspec.yaml..."
+          # Copy icon jika ada
+          if [ -d "../android/app/src/main/res" ]; then
+            cp -r ../android/app/src/main/res/* android/app/src/main/res/ 2>/dev/null || true
+          fi
+
           cat > pubspec.yaml << 'EOF'
           name: myapp
           description: WebView App
@@ -128,7 +154,6 @@ jobs:
             uses-material-design: true
           EOF
 
-          echo "📝 Creating main.dart..."
           cat > lib/main.dart << 'EOF'
           import 'package:flutter/material.dart';
           import 'package:webview_flutter/webview_flutter.dart';
@@ -196,11 +221,9 @@ jobs:
           }
           EOF
 
-          # Ganti placeholder dengan nilai asli (sudah di-escape agar aman)
           sed -i "s/__APP_NAME__/${ESC_APP_NAME}/g" lib/main.dart
           sed -i "s#__APP_URL__#${ESC_APP_URL}#g" lib/main.dart
 
-          echo "📝 Configuring Android Manifest..."
           cat > android/app/src/main/AndroidManifest.xml << 'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="__PACKAGE_NAME__">
@@ -208,6 +231,7 @@ jobs:
               <application
                   android:label="__APP_NAME__"
                   android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
                   android:usesCleartextTraffic="true"
                   android:theme="@style/Theme.AppCompat.NoActionBar">
                   <activity
@@ -233,23 +257,15 @@ jobs:
           sed -i "s/__PACKAGE_NAME__/${ESC_PACKAGE_NAME}/g" android/app/src/main/AndroidManifest.xml
           sed -i "s/__APP_NAME__/${ESC_APP_NAME}/g" android/app/src/main/AndroidManifest.xml
 
-          echo "📝 Configuring build.gradle..."
           sed -i "s/applicationId \".*\"/applicationId \"${ESC_PACKAGE_NAME}\"/g" android/app/build.gradle
           sed -i "s/minSdkVersion .*/minSdkVersion 21/g" android/app/build.gradle
           sed -i "s/targetSdkVersion .*/targetSdkVersion 34/g" android/app/build.gradle
           sed -i "s/versionCode .*/versionCode 1/g" android/app/build.gradle
           sed -i "s/versionName .*/versionName \"1.0.0\"/g" android/app/build.gradle
 
-          echo "📦 Getting dependencies..."
           flutter pub get
-
-          echo "🧹 Cleaning..."
           flutter clean
-
-          echo "🔨 Building APK..."
           flutter build apk --release
-
-          echo "✅ Build complete!"
 
       # ============================================================
       # BUILD DARI ZIP
@@ -260,15 +276,12 @@ jobs:
           ZIP_URL: ${{ inputs.zip_url }}
         run: |
           set -e
-          echo "📦 Downloading ZIP..."
           mkdir -p workspace
           cd workspace
           wget -O project.zip "$ZIP_URL"
           unzip -o project.zip -d project/
 
-          # Cari folder yang benar-benar berisi pubspec.yaml (support nested folder di dalam zip)
           PUBSPEC_PATH=$(find project -maxdepth 3 -name "pubspec.yaml" | head -n 1)
-
           if [ -z "$PUBSPEC_PATH" ]; then
             echo "❌ pubspec.yaml not found!"
             exit 1
@@ -278,19 +291,18 @@ jobs:
           echo "📂 Project ditemukan di: $PROJECT_DIR"
           cd "$PROJECT_DIR"
 
-          echo "📦 Getting dependencies..."
+          # Copy icon jika ada
+          if [ -d "../../android/app/src/main/res" ]; then
+            mkdir -p android/app/src/main/res
+            cp -r ../../android/app/src/main/res/* android/app/src/main/res/ 2>/dev/null || true
+          fi
+
           flutter pub get
-
-          echo "🧹 Cleaning..."
           flutter clean
-
-          echo "🔨 Building APK..."
           flutter build apk --release
 
-          echo "✅ Build complete!"
-
       # ============================================================
-      # LOCATE APK (agar step berikutnya tidak hardcode path)
+      # LOCATE & UPLOAD
       # ============================================================
       - name: Locate APK
         if: success()
@@ -304,9 +316,6 @@ jobs:
           echo "✅ APK ditemukan: $APK_PATH"
           echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
 
-      # ============================================================
-      # UPLOAD & SEND
-      # ============================================================
       - name: Upload APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
@@ -326,6 +335,7 @@ jobs:
 
             📱 Nama: ${{ inputs.app_name }}
             📦 Package: ${{ inputs.package_name }}
+            🎨 Icon: ${{ inputs.icon_data != '' && 'Custom ✅' || 'Default' }}
             📤 Mengirim APK...
           document: ${{ steps.locate_apk.outputs.apk_path }}
 
@@ -340,7 +350,4 @@ jobs:
 
             📱 Nama: ${{ inputs.app_name }}
             👤 User: ${{ inputs.user_id }}
-            📦 Package: ${{ inputs.package_name }}
-
-            🔍 Cek log:
-            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            📦 Package: ${{ inputs.package_name }} mm
