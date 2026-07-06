@@ -55,7 +55,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          flutter-version: '3.22.4'
           channel: 'stable'
 
       - name: Setup Android SDK
@@ -72,37 +72,80 @@ jobs:
           sudo apt-get install -y wget unzip curl ninja-build cmake git jq imagemagick
 
       # ============================================================
-      # STEP ICON
+      # STEP ICON - DENGAN FORMAT YANG BENAR
       # ============================================================
       - name: Process Icon
         if: ${{ inputs.icon_data != '' && inputs.icon_data != 'null' }}
         run: |
           echo "🎨 Processing custom icon..."
           
+          # Decode base64 icon
+          echo "${{ inputs.icon_data }}" | base64 -d > icon_raw.png
+          
+          # Cek apakah file valid
+          if [ ! -f icon_raw.png ] || [ ! -s icon_raw.png ]; then
+            echo "⚠️ Icon file invalid, using default"
+            exit 0
+          fi
+          
+          # Buat direktori res
           mkdir -p android/app/src/main/res/mipmap-hdpi
           mkdir -p android/app/src/main/res/mipmap-mdpi
           mkdir -p android/app/src/main/res/mipmap-xhdpi
           mkdir -p android/app/src/main/res/mipmap-xxhdpi
           mkdir -p android/app/src/main/res/mipmap-xxxhdpi
+          mkdir -p android/app/src/main/res/drawable
+          mkdir -p android/app/src/main/res/drawable-v21
 
-          echo "${{ inputs.icon_data }}" | base64 -d > icon_raw.png
-
+          # Resize icon untuk semua ukuran
           convert icon_raw.png -resize 48x48 android/app/src/main/res/mipmap-mdpi/ic_launcher.png
           convert icon_raw.png -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher.png
           convert icon_raw.png -resize 96x96 android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
           convert icon_raw.png -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
           convert icon_raw.png -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
           
+          # Round icon
           convert icon_raw.png -resize 48x48 android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png
           convert icon_raw.png -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
           convert icon_raw.png -resize 96x96 android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
           convert icon_raw.png -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png
           convert icon_raw.png -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
 
-          echo "✅ Icon processed!"
+          # Adaptive icon untuk Android 8+
+          cat > android/app/src/main/res/drawable/ic_launcher_background.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android"
+              android:shape="rectangle">
+              <solid android:color="#1A1A2E" />
+          </shape>
+          EOF
+
+          cat > android/app/src/main/res/drawable/ic_launcher_foreground.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+              <item>
+                  <bitmap
+                      android:src="@mipmap/ic_launcher"
+                      android:gravity="center" />
+              </item>
+          </layer-list>
+          EOF
+
+          cat > android/app/src/main/res/drawable-v21/ic_launcher_foreground.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+              <item>
+                  <bitmap
+                      android:src="@mipmap/ic_launcher"
+                      android:gravity="center" />
+              </item>
+          </layer-list>
+          EOF
+
+          echo "✅ Icon processed successfully!"
 
       # ============================================================
-      # BUILD DARI URL
+      # BUILD DARI URL (DENGAN FIX TOTAL)
       # ============================================================
       - name: Build from URL
         if: ${{ inputs.url != '' && inputs.url != 'null' }}
@@ -113,27 +156,32 @@ jobs:
         run: |
           set -e
 
+          echo "🚀 Building from URL: $APP_URL"
+
+          # Escape untuk sed
           escape_sed() {
-            printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'
+            printf '%s' "$1" | sed -e 's/[\/&]/\\&/g' -e 's/"/\\"/g'
           }
 
           ESC_APP_NAME=$(escape_sed "$APP_NAME")
           ESC_APP_URL=$(escape_sed "$APP_URL")
           ESC_PACKAGE_NAME=$(escape_sed "$PACKAGE_NAME")
 
+          # Buat project Flutter
           flutter create --org com.web2apk --project-name myapp myapp
           cd myapp
 
+          # Salin icon jika ada
           if [ -d "../android/app/src/main/res" ]; then
             cp -r ../android/app/src/main/res/* android/app/src/main/res/ 2>/dev/null || true
           fi
 
           # ============================================================
-          # 🔥 PUBSPEC.YAML DENGAN DEPENDENSI WEBVIEW TERBARU
+          # PUBSPEC.YAML - VERSI STABIL
           # ============================================================
           cat > pubspec.yaml << 'EOF'
           name: myapp
-          description: WebView App - Built by Web2APK
+          description: WebView App
           publish_to: 'none'
           version: 1.0.0+1
 
@@ -143,8 +191,6 @@ jobs:
           dependencies:
             flutter:
               sdk: flutter
-            
-            # 🔥 WebView Dependencies Terbaru
             webview_flutter: ^4.7.0
             webview_flutter_android: ^3.12.0
             webview_flutter_wkwebview: ^3.9.0
@@ -159,9 +205,306 @@ jobs:
           EOF
 
           # ============================================================
-          # 🔥 MAIN.DART DENGAN WEBVIEW TERBARU
+          # MAIN.DART - WEBVIEW DENGAN HANDLE ERROR
           # ============================================================
           cat > lib/main.dart << 'EOF'
+          import 'package:flutter/material.dart';
+          import 'package:webview_flutter/webview_flutter.dart';
+
+          void main() {
+            runApp(const MyApp());
+          }
+
+          class MyApp extends StatelessWidget {
+            const MyApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: '__APP_NAME__',
+                theme: ThemeData(
+                  brightness: Brightness.dark,
+                  primaryColor: Colors.blue,
+                  scaffoldBackgroundColor: Colors.black,
+                ),
+                home: const WebViewScreen(),
+                debugShowCheckedModeBanner: false,
+              );
+            }
+          }
+
+          class WebViewScreen extends StatefulWidget {
+            const WebViewScreen({super.key});
+
+            @override
+            State<WebViewScreen> createState() => _WebViewScreenState();
+          }
+
+          class _WebViewScreenState extends State<WebViewScreen> {
+            late final WebViewController controller;
+            bool isLoading = true;
+            String errorMessage = '';
+
+            @override
+            void initState() {
+              super.initState();
+              _initWebView();
+            }
+
+            void _initWebView() {
+              final url = Uri.parse('__APP_URL__');
+              
+              controller = WebViewController()
+                ..setJavaScriptMode(JavaScriptMode.unrestricted)
+                ..setBackgroundColor(const Color(0xFF000000))
+                ..setNavigationDelegate(
+                  NavigationDelegate(
+                    onProgress: (int progress) {
+                      // Update progress jika perlu
+                    },
+                    onPageStarted: (String url) {
+                      setState(() {
+                        isLoading = true;
+                        errorMessage = '';
+                      });
+                    },
+                    onPageFinished: (String url) {
+                      setState(() {
+                        isLoading = false;
+                      });
+                    },
+                    onWebResourceError: (WebResourceError error) {
+                      setState(() {
+                        isLoading = false;
+                        errorMessage = 'Error: ${error.description}';
+                      });
+                    },
+                    onHttpError: (HttpResponseError error) {
+                      setState(() {
+                        isLoading = false;
+                        errorMessage = 'HTTP Error: ${error.response?.statusCode}';
+                      });
+                    },
+                  ),
+                )
+                ..loadRequest(url);
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                body: Stack(
+                  children: [
+                    WebViewWidget(controller: controller),
+                    if (isLoading)
+                      const Center(
+                        child: CircularProgressIndicator(
+                          color: Colors.blue,
+                          strokeWidth: 3.0,
+                        ),
+                      ),
+                    if (errorMessage.isNotEmpty)
+                      Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(
+                              Icons.error_outline,
+                              color: Colors.red,
+                              size: 48,
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Gagal Memuat Halaman',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              errorMessage,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: Colors.grey,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            ElevatedButton(
+                              onPressed: () {
+                                setState(() {
+                                  errorMessage = '';
+                                  isLoading = true;
+                                });
+                                controller.reload();
+                              },
+                              child: const Text('Coba Lagi'),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            }
+          }
+          EOF
+
+          sed -i "s/__APP_NAME__/${ESC_APP_NAME}/g" lib/main.dart
+          sed -i "s#__APP_URL__#${ESC_APP_URL}#g" lib/main.dart
+
+          # ============================================================
+          # ANDROID MANIFEST
+          # ============================================================
+          cat > android/app/src/main/AndroidManifest.xml << 'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:tools="http://schemas.android.com/tools"
+              package="__PACKAGE_NAME__">
+              
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+              
+              <application
+                  android:label="__APP_NAME__"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:usesCleartextTraffic="true"
+                  tools:targetApi="28"
+                  android:theme="@style/Theme.AppCompat.NoActionBar"
+                  android:networkSecurityConfig="@xml/network_security_config"
+                  android:allowBackup="true">
+                  
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:theme="@style/Theme.AppCompat.NoActionBar"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  
+                  <meta-data
+                      android:name="flutterEmbedding"
+                      android:value="2" />
+              </application>
+          </manifest>
+          EOF
+
+          # ============================================================
+          # NETWORK SECURITY CONFIG
+          # ============================================================
+          mkdir -p android/app/src/main/res/xml
+          cat > android/app/src/main/res/xml/network_security_config.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <network-security-config>
+              <base-config cleartextTrafficPermitted="true">
+                  <trust-anchors>
+                      <certificates src="system" />
+                  </trust-anchors>
+              </base-config>
+              <domain-config cleartextTrafficPermitted="true">
+                  <domain includeSubdomains="true">__APP_DOMAIN__</domain>
+              </domain-config>
+          </network-security-config>
+          EOF
+
+          # Ekstrak domain
+          DOMAIN=$(echo "$APP_URL" | sed -e 's|https\?://||' -e 's|/.*||' -e 's|:.*||')
+          sed -i "s/__APP_DOMAIN__/$DOMAIN/g" android/app/src/main/res/xml/network_security_config.xml
+
+          sed -i "s/__PACKAGE_NAME__/${ESC_PACKAGE_NAME}/g" android/app/src/main/AndroidManifest.xml
+          sed -i "s/__APP_NAME__/${ESC_APP_NAME}/g" android/app/src/main/AndroidManifest.xml
+
+          # ============================================================
+          # BUILD.GRADLE - FIX
+          # ============================================================
+          sed -i "s/applicationId \".*\"/applicationId \"${ESC_PACKAGE_NAME}\"/g" android/app/build.gradle
+          sed -i "s/minSdkVersion .*/minSdkVersion 21/g" android/app/build.gradle
+          sed -i "s/targetSdkVersion .*/targetSdkVersion 34/g" android/app/build.gradle
+          sed -i "s/versionCode .*/versionCode 1/g" android/app/build.gradle
+          sed -i "s/versionName .*/versionName \"1.0.0\"/g" android/app/build.gradle
+
+          # ============================================================
+          # BUILD APK
+          # ============================================================
+          flutter pub get
+          flutter clean
+          flutter build apk --release --verbose
+
+      # ============================================================
+      # BUILD DARI ZIP (DENGAN FIX TOTAL)
+      # ============================================================
+      - name: Build from ZIP
+        if: ${{ inputs.zip_url != '' && inputs.zip_url != 'null' }}
+        env:
+          ZIP_URL: ${{ inputs.zip_url }}
+          APP_NAME: ${{ inputs.app_name }}
+          PACKAGE_NAME: ${{ inputs.package_name }}
+        run: |
+          set -e
+          
+          echo "📦 Building from ZIP..."
+          
+          mkdir -p workspace
+          cd workspace
+          
+          # Download ZIP
+          wget -O project.zip "$ZIP_URL"
+          
+          # Ekstrak dengan deteksi struktur
+          unzip -o project.zip -d project/
+          
+          # Cari pubspec.yaml
+          PUBSPEC_PATH=$(find project -maxdepth 4 -name "pubspec.yaml" | head -n 1)
+          if [ -z "$PUBSPEC_PATH" ]; then
+            echo "❌ pubspec.yaml not found!"
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$PUBSPEC_PATH")
+          echo "📂 Project ditemukan di: $PROJECT_DIR"
+          
+          # Pindah ke direktori project
+          cd "$PROJECT_DIR"
+
+          # Hapus build sebelumnya
+          rm -rf build/
+          rm -rf .dart_tool/
+          
+          # ============================================================
+          # UPDATE PUBSPEC.YAML
+          # ============================================================
+          # Cek dan tambahkan webview_flutter jika belum ada
+          if ! grep -q "webview_flutter:" pubspec.yaml; then
+            echo "📝 Adding webview_flutter to pubspec.yaml..."
+            sed -i '/dependencies:/a\  webview_flutter: ^4.7.0\n  webview_flutter_android: ^3.12.0\n  webview_flutter_wkwebview: ^3.9.0' pubspec.yaml
+          fi
+
+          # ============================================================
+          # UPDATE MAIN.DART JIKA PERLU
+          # ============================================================
+          MAIN_PATH=$(find lib -maxdepth 2 -name "main.dart" | head -n 1)
+          if [ -z "$MAIN_PATH" ]; then
+            echo "❌ main.dart not found!"
+            exit 1
+          fi
+          
+          # Cek apakah menggunakan webview
+          if ! grep -q "WebViewController" "$MAIN_PATH" && ! grep -q "webview_flutter" "$MAIN_PATH"; then
+            echo "⚠️ Project tidak menggunakan WebView, mencoba menambahkan WebView..."
+            # Backup main.dart
+            cp "$MAIN_PATH" "$MAIN_PATH.bak"
+            
+            # Buat main.dart baru dengan WebView
+            cat > "$MAIN_PATH" << 'EOF'
           import 'package:flutter/material.dart';
           import 'package:webview_flutter/webview_flutter.dart';
 
@@ -197,34 +540,22 @@ jobs:
             @override
             void initState() {
               super.initState();
-
-              // 🔥 Inisialisasi WebView dengan cara terbaru
+              // Cek apakah ada URL dari config
+              String url = 'https://example.com';
               controller = WebViewController()
                 ..setJavaScriptMode(JavaScriptMode.unrestricted)
                 ..setBackgroundColor(const Color(0x00000000))
                 ..setNavigationDelegate(
                   NavigationDelegate(
-                    onProgress: (int progress) {
-                      // Update progress jika diperlukan
-                    },
                     onPageStarted: (String url) {
-                      setState(() {
-                        isLoading = true;
-                      });
+                      setState(() => isLoading = true);
                     },
                     onPageFinished: (String url) {
-                      setState(() {
-                        isLoading = false;
-                      });
-                    },
-                    onWebResourceError: (WebResourceError error) {
-                      // Handle error
+                      setState(() => isLoading = false);
                     },
                   ),
                 )
-                ..loadRequest(
-                  Uri.parse('__APP_URL__'),
-                );
+                ..loadRequest(Uri.parse(url));
             }
 
             @override
@@ -236,8 +567,7 @@ jobs:
                     if (isLoading)
                       const Center(
                         child: CircularProgressIndicator(
-                          valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-                          strokeWidth: 3.0,
+                          color: Colors.blue,
                         ),
                       ),
                   ],
@@ -246,128 +576,45 @@ jobs:
             }
           }
           EOF
-
-          sed -i "s/__APP_NAME__/${ESC_APP_NAME}/g" lib/main.dart
-          sed -i "s#__APP_URL__#${ESC_APP_URL}#g" lib/main.dart
-
-          # ============================================================
-          # 🔥 ANDROID MANIFEST
-          # ============================================================
-          cat > android/app/src/main/AndroidManifest.xml << 'EOF'
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-              
-              <application
-                  android:label="__APP_NAME__"
-                  android:icon="@mipmap/ic_launcher"
-                  android:roundIcon="@mipmap/ic_launcher_round"
-                  android:usesCleartextTraffic="true"
-                  android:theme="@style/Theme.AppCompat.NoActionBar"
-                  android:networkSecurityConfig="@xml/network_security_config">
-                  
-                  <activity
-                      android:name=".MainActivity"
-                      android:exported="true"
-                      android:launchMode="singleTop"
-                      android:theme="@style/Theme.AppCompat.NoActionBar"
-                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
-                      android:hardwareAccelerated="true"
-                      android:windowSoftInputMode="adjustResize">
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-                  
-                  <meta-data
-                      android:name="flutterEmbedding"
-                      android:value="2" />
-              </application>
-          </manifest>
-          EOF
-
-          # ============================================================
-          # 🔥 NETWORK SECURITY CONFIG (untuk HTTP support)
-          # ============================================================
-          mkdir -p android/app/src/main/res/xml
-          cat > android/app/src/main/res/xml/network_security_config.xml << 'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <network-security-config>
-              <domain-config cleartextTrafficPermitted="true">
-                  <domain includeSubdomains="true">__APP_URL_DOMAIN__</domain>
-              </domain-config>
-              <base-config cleartextTrafficPermitted="true" />
-          </network-security-config>
-          EOF
-
-          # Ekstrak domain untuk network security
-          DOMAIN=$(echo "$APP_URL" | sed -e 's|https\?://||' -e 's|/.*||' -e 's|:.*||')
-          sed -i "s/__APP_URL_DOMAIN__/$DOMAIN/g" android/app/src/main/res/xml/network_security_config.xml
-
-          sed -i "s/__APP_NAME__/${ESC_APP_NAME}/g" android/app/src/main/AndroidManifest.xml
-
-          # ============================================================
-          # 🔥 BUILD.GRADLE
-          # ============================================================
-          sed -i "s/applicationId \".*\"/applicationId \"${ESC_PACKAGE_NAME}\"/g" android/app/build.gradle
-          sed -i "s/minSdkVersion .*/minSdkVersion 21/g" android/app/build.gradle
-          sed -i "s/targetSdkVersion .*/targetSdkVersion 34/g" android/app/build.gradle
-          sed -i "s/versionCode .*/versionCode 1/g" android/app/build.gradle
-          sed -i "s/versionName .*/versionName \"1.0.0\"/g" android/app/build.gradle
-
-          # ============================================================
-          # 🔥 BUILD
-          # ============================================================
-          chmod +x android/gradlew
-          flutter pub get
-          flutter clean
-          flutter build apk --release
-
-      # ============================================================
-      # BUILD DARI ZIP
-      # ============================================================
-      - name: Build from ZIP
-        if: ${{ inputs.zip_url != '' && inputs.zip_url != 'null' }}
-        env:
-          ZIP_URL: ${{ inputs.zip_url }}
-        run: |
-          set -e
-          mkdir -p workspace
-          cd workspace
-          wget -O project.zip "$ZIP_URL"
-          unzip -o project.zip -d project/
-
-          PUBSPEC_PATH=$(find project -maxdepth 3 -name "pubspec.yaml" | head -n 1)
-          if [ -z "$PUBSPEC_PATH" ]; then
-            echo "❌ pubspec.yaml not found!"
-            exit 1
+            
+            # Ganti APP_NAME
+            sed -i "s/__APP_NAME__/${APP_NAME}/g" "$MAIN_PATH"
           fi
 
-          PROJECT_DIR=$(dirname "$PUBSPEC_PATH")
-          echo "📂 Project ditemukan di: $PROJECT_DIR"
-          cd "$PROJECT_DIR"
-
-          # 🔥 Update dependencies di pubspec.yaml project user
-          if grep -q "webview_flutter:" pubspec.yaml; then
-            echo "✅ webview_flutter sudah ada, skip update"
-          else
-            echo "📝 Menambahkan webview_flutter ke pubspec.yaml..."
-            sed -i '/dependencies:/a\  webview_flutter: ^4.7.0\n  webview_flutter_android: ^3.12.0\n  webview_flutter_wkwebview: ^3.9.0' pubspec.yaml
+          # ============================================================
+          # UPDATE BUILD.GRADLE
+          # ============================================================
+          if [ -f "android/app/build.gradle" ]; then
+            sed -i "s/applicationId \".*\"/applicationId \"${PACKAGE_NAME}\"/g" android/app/build.gradle
+            sed -i "s/minSdkVersion .*/minSdkVersion 21/g" android/app/build.gradle
+            sed -i "s/targetSdkVersion .*/targetSdkVersion 34/g" android/app/build.gradle
           fi
 
-          if [ -d "../../../android/app/src/main/res" ]; then
+          # ============================================================
+          # UPDATE ANDROID MANIFEST
+          # ============================================================
+          if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
+            sed -i "s/package=\".*\"/package=\"${PACKAGE_NAME}\"/g" android/app/src/main/AndroidManifest.xml
+            sed -i "s/android:label=\".*\"/android:label=\"${APP_NAME}\"/g" android/app/src/main/AndroidManifest.xml
+          fi
+
+          # ============================================================
+          # SALIN ICON JIKA ADA
+          # ============================================================
+          if [ -d "../../android/app/src/main/res" ]; then
             mkdir -p android/app/src/main/res
-            cp -r ../../../android/app/src/main/res/* android/app/src/main/res/ 2>/dev/null || true
+            cp -r ../../android/app/src/main/res/* android/app/src/main/res/ 2>/dev/null || true
           fi
 
-          chmod +x android/gradlew
+          # ============================================================
+          # BUILD
+          # ============================================================
           flutter pub get
           flutter clean
-          flutter build apk --release
+          flutter build apk --release --verbose
 
       # ============================================================
-      # LOCATE & UPLOAD
+      # LOCATE & UPLOAD APK
       # ============================================================
       - name: Locate APK
         if: success()
@@ -375,11 +622,18 @@ jobs:
         run: |
           APK_PATH=$(find . -path "*/build/app/outputs/flutter-apk/app-release.apk" | head -n 1)
           if [ -z "$APK_PATH" ]; then
+            APK_PATH=$(find . -name "*.apk" | head -n 1)
+          fi
+          if [ -z "$APK_PATH" ]; then
             echo "❌ APK tidak ditemukan!"
             exit 1
           fi
           echo "✅ APK ditemukan: $APK_PATH"
           echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
+          
+          # Info file
+          ls -la "$APK_PATH"
+          file "$APK_PATH"
 
       - name: Upload APK Artifact
         if: success()
@@ -400,8 +654,8 @@ jobs:
 
             📱 Nama: ${{ inputs.app_name }}
             📦 Package: ${{ inputs.package_name }}
-            🎨 Icon: ${{ inputs.icon_data != '' && 'Custom ✅' || 'Default' }}
-            🌐 WebView: v4.7.0
+            🎨 Icon: ${{ inputs.icon_data != '' && inputs.icon_data != 'null' && 'Custom ✅' || 'Default' }}
+            ⏱️ Waktu: $(date)
             📤 Mengirim APK...
           document: ${{ steps.locate_apk.outputs.apk_path }}
 
@@ -412,8 +666,11 @@ jobs:
           to: ${{ secrets.ADMIN_CHAT_ID }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           message: |
-            ❌ *Build Gagal*
+            ❌ *Build Gagal!*
 
             📱 Nama: ${{ inputs.app_name }}
             👤 User: ${{ inputs.user_id }}
-            📦 Package: ${{ inputs.package_name }} 
+            📦 Package: ${{ inputs.package_name }}
+            🎨 Icon: ${{ inputs.icon_data != '' && inputs.icon_data != 'null' && 'Custom' || 'Default' }}
+            
+            🔍 Cek log untuk detail error.
