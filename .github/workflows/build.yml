@@ -1,51 +1,44 @@
-name: Web2APK Pro Build System
+name: Web2APK Builder
 
 on:
   workflow_dispatch:
     inputs:
       url:
         description: 'Website URL'
-        required: false
+        required: true
         type: string
       app_name:
         description: 'Nama Aplikasi'
         required: true
         type: string
       package_name:
-        description: 'Package Name'
+        description: 'Package Name (contoh: com.web2apk.myapp)'
         required: true
         type: string
       user_id:
         description: 'Telegram User ID'
         required: true
         type: string
-      zip_url:
-        description: 'URL ZIP Flutter'
-        required: false
-        type: string
-
-env:
-  JAVA_VERSION: '17'
-  FLUTTER_VERSION: '3.19.6'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
-
+      # ============================================================
+      # SETUP ENVIRONMENT
+      # ============================================================
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: '17'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          flutter-version: '3.19.6'
           channel: 'stable'
 
       - name: Setup Android SDK
@@ -56,157 +49,207 @@ jobs:
             platforms;android-34
             build-tools;34.0.0
 
-      - name: Install Dependencies
+      - name: Install Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build cmake git wget unzip jq curl
+          sudo apt-get install -y wget unzip curl
 
-      # ============================================
-      # BUILD WEBSITE TO APK
-      # ============================================
-      - name: Build APK from URL
-        if: ${{ inputs.url != '' && inputs.url != 'null' }}
+      # ============================================================
+      # BUILD APK
+      # ============================================================
+      - name: Create Flutter Project
         run: |
-          ORG_NAME=$(echo "${{ inputs.package_name }}" | rev | cut -d'.' -f2- | rev)
-          PROJECT_NAME=$(echo "${{ inputs.package_name }}" | rev | cut -d'.' -f1 | rev)
-          
-          flutter create --org "$ORG_NAME" --project-name "$PROJECT_NAME" myapp
+          flutter create --org com.web2apk --project-name myapp myapp
           cd myapp
 
-          # Buat pubspec.yaml dengan format EOF tanpa spasi di awal baris (cat << 'EOF')
-          cat << 'EOF' > pubspec.yaml
-name: myapp
-description: Web2APK Flutter project.
-publish_to: 'none'
-version: 1.0.0+1
+      - name: Configure pubspec.yaml
+        run: |
+          cd myapp
+          cat > pubspec.yaml << 'EOF'
+          name: myapp
+          description: WebView App
+          publish_to: 'none'
+          version: 1.0.0+1
 
-environment:
-  sdk: '>=3.0.0 <4.0.0'
+          environment:
+            sdk: '>=3.0.0 <4.0.0'
 
-dependencies:
-  flutter:
-    sdk: flutter
-  webview_flutter: ^4.4.0
+          dependencies:
+            flutter:
+              sdk: flutter
+            webview_flutter: ^4.4.0
 
-dev_dependencies:
-  flutter_test:
-    sdk: flutter
-  flutter_lints: ^3.0.0
+          dev_dependencies:
+            flutter_test:
+              sdk: flutter
+            flutter_lints: ^2.0.0
 
-flutter:
-  uses-material-design: true
-EOF
+          flutter:
+            uses-material-design: true
+          EOF
 
-          cat << 'EOF' > lib/main.dart
-import 'package:flutter/material.dart';
-import 'package:webview_flutter/webview_flutter.dart';
+      - name: Create main.dart
+        run: |
+          cd myapp
+          cat > lib/main.dart << 'EOF'
+          import 'package:flutter/material.dart';
+          import 'package:webview_flutter/webview_flutter.dart';
 
-void main() {
-  runApp(MyApp());
-}
+          void main() {
+            runApp(const MyApp());
+          }
 
-class MyApp extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: '${{ inputs.app_name }}',
-      theme: ThemeData.dark(),
-      home: WebViewScreen(),
-      debugShowCheckedModeBanner: false,
-    );
-  }
-}
+          class MyApp extends StatelessWidget {
+            const MyApp({super.key});
 
-class WebViewScreen extends StatefulWidget {
-  @override
-  _WebViewScreenState createState() => _WebViewScreenState();
-}
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: '${{ inputs.app_name }}',
+                theme: ThemeData.dark(),
+                home: const WebViewScreen(),
+                debugShowCheckedModeBanner: false,
+              );
+            }
+          }
 
-class _WebViewScreenState extends State<WebViewScreen> {
-  late WebViewController controller;
-  bool isLoading = true;
+          class WebViewScreen extends StatefulWidget {
+            const WebViewScreen({super.key});
 
-  @override
-  void initState() {
-    super.initState();
-    controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageFinished: (url) {
-            setState(() {
-              isLoading = false;
-            });
-          },
-        ),
-      )
-      ..loadRequest(Uri.parse('${{ inputs.url }}'));
-  }
+            @override
+            State<WebViewScreen> createState() => _WebViewScreenState();
+          }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: Stack(
-          children: [
-            WebViewWidget(controller: controller),
-            if (isLoading)
-              Center(
-                child: CircularProgressIndicator(
-                  valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+          class _WebViewScreenState extends State<WebViewScreen> {
+            late final WebViewController controller;
+            bool isLoading = true;
+
+            @override
+            void initState() {
+              super.initState();
+              controller = WebViewController()
+                ..setJavaScriptMode(JavaScriptMode.unrestricted)
+                ..setNavigationDelegate(
+                  NavigationDelegate(
+                    onPageFinished: (url) {
+                      setState(() => isLoading = false);
+                    },
+                    onWebResourceError: (error) {
+                      print('Error: ${error.description}');
+                    },
+                  ),
+                )
+                ..loadRequest(Uri.parse('${{ inputs.url }}'));
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                body: Stack(
+                  children: [
+                    WebViewWidget(controller: controller),
+                    if (isLoading)
+                      const Center(
+                        child: CircularProgressIndicator(
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                        ),
+                      ),
+                  ],
                 ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-EOF
+              );
+            }
+          }
+          EOF
 
-          # Inject permission ke AndroidManifest bawaan secara aman
-          sed -i '/<manifest/a \    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
-          sed -i 's/android:label=".*"/android:label="${{ inputs.app_name }}"/g' android/app/src/main/AndroidManifest.xml
-          sed -i '/<application/a \        android:usesCleartextTraffic="true"' android/app/src/main/AndroidManifest.xml
+      - name: Configure Android Manifest
+        run: |
+          cd myapp
+          cat > android/app/src/main/AndroidManifest.xml << 'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="${{ inputs.package_name }}">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application
+                  android:label="${{ inputs.app_name }}"
+                  android:icon="@mipmap/ic_launcher"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@style/Theme.AppCompat.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:theme="@style/Theme.AppCompat.NoActionBar"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <meta-data
+                      android:name="flutterEmbedding"
+                      android:value="2" />
+              </application>
+          </manifest>
+          EOF
 
-          # Selesaikan konfigurasi gradle
+      - name: Configure build.gradle
+        run: |
+          cd myapp
+          sed -i "s/applicationId \".*\"/applicationId \"${{ inputs.package_name }}\"/g" android/app/build.gradle
           sed -i "s/minSdkVersion .*/minSdkVersion 21/g" android/app/build.gradle
           sed -i "s/targetSdkVersion .*/targetSdkVersion 34/g" android/app/build.gradle
+          sed -i "s/versionCode .*/versionCode 1/g" android/app/build.gradle
+          sed -i "s/versionName .*/versionName \"1.0.0\"/g" android/app/build.gradle
 
+      - name: Build APK
+        run: |
+          cd myapp
           flutter pub get
+          flutter clean
           flutter build apk --release
 
-      # ============================================
-      # UPLOAD ARTIFACT
-      # ============================================
+      # ============================================================
+      # UPLOAD & SEND
+      # ============================================================
       - name: Upload APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: apk-builds
-          path: myapp/build/app/outputs/flutter-apk/app-release.apk
+          path: myapp/build/app/outputs/flutter-apk/*.apk
           retention-days: 7
 
-      # ============================================
-      # KIRIM KE TELEGRAM VIA CURL
-      # ============================================
-      - name: Kirim APK ke Telegram
+      - name: Send APK to Telegram
         if: success()
-        run: |
-          CAPTION=$(printf "✅ *Build Berhasil!*\n\n📱 *Nama:* ${{ inputs.app_name }}\n📦 *Package:* \`${{ inputs.package_name }}\`")
-          
-          curl -F chat_id="${{ inputs.user_id }}" \
-               -F document=@"myapp/build/app/outputs/flutter-apk/app-release.apk" \
-               -F caption="$CAPTION" \
-               -F parse_mode="Markdown" \
-               https://api.telegram.org/bot8709293439:AAHBCZv222NXRw429HaZYxH1E6B3150cku8/sendDocument
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ inputs.user_id }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          message: |
+            ✅ *Build Berhasil!*
 
-      - name: Notifikasi Gagal
+            📱 Nama: ${{ inputs.app_name }}
+            📦 Package: ${{ inputs.package_name }}
+            🌐 URL: ${{ inputs.url }}
+
+            📤 Mengirim APK...
+          document: myapp/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Send ARM64 APK
+        if: success()
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ inputs.user_id }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          document: myapp/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+
+      - name: Notify Failure
         if: failure()
         uses: appleboy/telegram-action@master
         with:
-          to: 7492782458
-          token: 8709293439:AAHBCZv222NXRw429HaZYxH1E6B3150cku8
+          to: ${{ secrets.ADMIN_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           message: |
             ❌ *Build Gagal*
 
