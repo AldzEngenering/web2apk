@@ -26,7 +26,7 @@ on:
 
 env:
   JAVA_VERSION: '17'
-  FLUTTER_VERSION: '3.22.4'  # Ganti ke versi stabil
+  FLUTTER_VERSION: '3.22.4'
 
 jobs:
   build:
@@ -71,21 +71,23 @@ jobs:
       - name: Build APK from URL
         if: ${{ inputs.url != '' && inputs.url != 'null' }}
         run: |
-          # Buat project Flutter baru
-          flutter create --org com.web2apk --project-name "${{ inputs.app_name }}" webview_app
-          cd webview_app
-          
           # ==========================================
-          # PERBAIKAN PUBSPEC.YAML
+          # BUAT PROJECT FLUTTER
+          # ==========================================
+          flutter create --org com.web2apk --project-name "webview_app" webview_app
+          cd webview_app
+
+          # ==========================================
+          # PUBSPEC.YAML - PASTIKAN VALID
           # ==========================================
           cat > pubspec.yaml << 'EOF'
-          name: ${{ inputs.app_name }}
-          description: WebView App
+          name: webview_app
+          description: A webview application.
           publish_to: 'none'
           version: 1.0.0+1
 
           environment:
-            sdk: '>=3.0.0 <4.0.0'
+            sdk: ">=3.0.0 <4.0.0"
 
           dependencies:
             flutter:
@@ -102,7 +104,7 @@ jobs:
           EOF
 
           # ==========================================
-          # PERBAIKAN MAIN.DART
+          # MAIN.DART - WEBSITE VIEW
           # ==========================================
           cat > lib/main.dart << 'EOF'
           import 'package:flutter/material.dart';
@@ -194,7 +196,7 @@ jobs:
           EOF
 
           # ==========================================
-          # PERBAIKAN ANDROID MANIFEST
+          # ANDROID MANIFEST
           # ==========================================
           cat > android/app/src/main/AndroidManifest.xml << 'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -241,8 +243,45 @@ jobs:
           sed -i "s/versionName .*/versionName \"1.0.0\"/g" android/app/build.gradle
 
           # ==========================================
-          # GET DEPENDENCIES & BUILD
+          # DEBUG: CEK FILE STRUCTURE
           # ==========================================
+          echo "📂 Checking project structure..."
+          ls -la
+          ls -la lib/
+          ls -la android/app/src/main/
+
+          # ==========================================
+          # GET DEPENDENCIES
+          # ==========================================
+          flutter pub get
+
+          # ==========================================
+          # BUILD APK
+          # ==========================================
+          flutter clean
+          flutter build apk --release --split-per-abi
+
+      # ============================================
+      # BUILD FROM ZIP (FLUTTER PROJECT)
+      # ============================================
+      - name: Build from ZIP
+        if: ${{ inputs.zip_url != '' && inputs.zip_url != 'null' }}
+        run: |
+          mkdir -p workspace
+          cd workspace
+          wget -O project.zip "${{ inputs.zip_url }}"
+          unzip -o project.zip -d project/
+          cd project/
+          
+          # Cari pubspec.yaml
+          if [ -f "pubspec.yaml" ]; then
+            echo "✅ pubspec.yaml ditemukan"
+          else
+            echo "❌ pubspec.yaml tidak ditemukan!"
+            exit 1
+          fi
+          
+          # Build
           flutter pub get
           flutter clean
           flutter build apk --release --split-per-abi
@@ -257,6 +296,7 @@ jobs:
           name: apk-builds
           path: |
             webview_app/build/app/outputs/flutter-apk/*.apk
+            workspace/project/build/app/outputs/flutter-apk/*.apk
           retention-days: 7
 
       # ============================================
@@ -273,9 +313,16 @@ jobs:
 
             📱 Nama: ${{ inputs.app_name }}
             📦 Package: ${{ inputs.package_name }}
-
             📤 Mengirim APK...
           document: webview_app/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Kirim APK ARM64
+        if: success()
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ inputs.user_id }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          document: webview_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
 
       - name: Notifikasi Gagal
         if: failure()
@@ -290,5 +337,5 @@ jobs:
             👤 User: ${{ inputs.user_id }}
             📦 Package: ${{ inputs.package_name }}
 
-            🔍 Cek log di:
+            🔍 Cek log:
             https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
