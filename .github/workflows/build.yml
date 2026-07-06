@@ -27,8 +27,6 @@ on:
 env:
   JAVA_VERSION: '17'
   FLUTTER_VERSION: '3.24.0'
-  NDK_VERSION: '26.1.10909125'
-  CM_VERSION: '3.22.1'
 
 jobs:
   build:
@@ -37,9 +35,6 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # ============================================
-      # 1. SETUP ENVIRONMENT
-      # ============================================
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -56,8 +51,6 @@ jobs:
             platform-tools
             platforms;android-34
             build-tools;34.0.0
-            extras;android;m2repository
-            extras;google;m2repository
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -66,35 +59,16 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Setup Ruby (for fastlane)
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.0'
-          bundler-cache: true
-
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            ninja-build \
-            cmake \
-            git \
-            wget \
-            unzip \
-            jq \
-            curl \
-            xmlstarlet \
-            imagemagick \
-            webp \
-            file
+          sudo apt-get install -y ninja-build cmake git wget unzip jq curl
 
       # ============================================
-      # 2. PREPARE PROJECT
+      # PREPARE PROJECT
       # ============================================
       - name: Create Project Directory
-        run: |
-          mkdir -p workspace
-          cd workspace
+        run: mkdir -p workspace
 
       - name: Download Flutter Project (if ZIP)
         if: ${{ inputs.zip_url != '' && inputs.zip_url != 'null' }}
@@ -102,17 +76,19 @@ jobs:
           cd workspace
           wget -O project.zip "${{ inputs.zip_url }}"
           unzip -o project.zip -d project/
-          ls -la project/
           # Cari pubspec.yaml
           if [ -f "project/pubspec.yaml" ]; then
             echo "✅ Flutter project ditemukan"
-          elif [ -f "project/**/pubspec.yaml" ]; then
+            mv project/* ./
+          elif [ -f "project/*/pubspec.yaml" ]; then
             echo "✅ Flutter project ditemukan di subfolder"
-            mv project/**/pubspec.yaml ./project/
+            find project -name "pubspec.yaml" -exec dirname {} \; | head -1 | xargs -I {} mv {}/* ./
           else
             echo "❌ pubspec.yaml tidak ditemukan!"
             exit 1
           fi
+          rm -rf project
+          ls -la
 
       - name: Create WebView Project (if URL)
         if: ${{ inputs.url != '' && inputs.url != 'null' }}
@@ -120,100 +96,60 @@ jobs:
           cd workspace
           flutter create --org com.web2apk --project-name "${{ inputs.app_name }}" webview_project
           cd webview_project
-
-          # Tambahkan webview_flutter dependency
+          
+          # Tambahkan webview_flutter
           echo "" >> pubspec.yaml
           echo "dependencies:" >> pubspec.yaml
           echo "  flutter:" >> pubspec.yaml
           echo "    sdk: flutter" >> pubspec.yaml
           echo "  webview_flutter: ^4.8.0" >> pubspec.yaml
-          echo "  webview_flutter_android: ^3.16.0" >> pubspec.yaml
-          echo "  webview_flutter_wkwebview: ^3.12.0" >> pubspec.yaml
-
+          
           flutter pub get
-
-          # Modifikasi main.dart untuk WebView
+          
+          # Buat main.dart dengan WebView
           cat > lib/main.dart << 'EOF'
           import 'package:flutter/material.dart';
           import 'package:webview_flutter/webview_flutter.dart';
-          import 'package:webview_flutter_android/webview_flutter_android.dart';
-          import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
-
+          
           void main() => runApp(MyApp());
-
+          
           class MyApp extends StatelessWidget {
             @override
             Widget build(BuildContext context) {
               return MaterialApp(
-                title: '${inputs.app_name}',
+                title: '${{ inputs.app_name }}',
                 theme: ThemeData.dark(),
                 home: WebViewScreen(),
                 debugShowCheckedModeBanner: false,
               );
             }
           }
-
+          
           class WebViewScreen extends StatefulWidget {
             @override
             _WebViewScreenState createState() => _WebViewScreenState();
           }
-
+          
           class _WebViewScreenState extends State<WebViewScreen> {
             late final WebViewController controller;
             bool _isLoading = true;
-            String _url = '${inputs.url}';
-
+            
             @override
             void initState() {
               super.initState();
-
-              late final PlatformWebViewControllerCreationParams params;
-              if (WebViewPlatform.instance is WebKitWebViewPlatform) {
-                params = WebKitWebViewControllerCreationParams(
-                  allowsInlineMediaPlayback: true,
-                  mediaPlaybackRequiresUserGesture: false,
-                );
-              } else {
-                params = const PlatformWebViewControllerCreationParams();
-              }
-
-              final WebViewController webController = WebViewController.fromPlatformCreationParams(params);
-
-              webController
+              controller = WebViewController()
                 ..setJavaScriptMode(JavaScriptMode.unrestricted)
                 ..setBackgroundColor(const Color(0x00000000))
                 ..setNavigationDelegate(
                   NavigationDelegate(
-                    onProgress: (int progress) {
-                      if (progress == 100) {
-                        setState(() => _isLoading = false);
-                      }
-                    },
-                    onPageStarted: (String url) {
-                      setState(() => _isLoading = true);
-                    },
                     onPageFinished: (String url) {
                       setState(() => _isLoading = false);
                     },
-                    onWebResourceError: (WebResourceError error) {
-                      print('Error: ${error.description}');
-                    },
                   ),
                 )
-                ..loadRequest(Uri.parse(_url));
-
-              if (webController.platform is AndroidWebViewController) {
-                (webController.platform as AndroidWebViewController)
-                  ..setMediaPlaybackRequiresUserGesture(false)
-                  ..setAllowFileAccess(true)
-                  ..setAllowContentAccess(true)
-                  ..setAllowFileAccessFromFileURLs(true)
-                  ..setAllowUniversalAccessFromFileURLs(true);
-              }
-
-              controller = webController;
+                ..loadRequest(Uri.parse('${{ inputs.url }}'));
             }
-
+            
             @override
             Widget build(BuildContext context) {
               return Scaffold(
@@ -231,10 +167,7 @@ jobs:
                                 valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
                               ),
                               SizedBox(height: 20),
-                              Text(
-                                'Loading...',
-                                style: TextStyle(color: Colors.white70),
-                              ),
+                              Text('Loading...', style: TextStyle(color: Colors.white70)),
                             ],
                           ),
                         ),
@@ -245,68 +178,28 @@ jobs:
             }
           }
           EOF
-
-          # Tambahkan internet permission di AndroidManifest.xml
-          cat > android/app/src/main/AndroidManifest.xml << 'EOF'
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="com.web2apk.${package_name}">
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-              <application
-                  android:label="${inputs.app_name}"
-                  android:name="${applicationName}"
-                  android:icon="@mipmap/ic_launcher"
-                  android:usesCleartextTraffic="true"
-                  android:allowBackup="true"
-                  android:theme="@style/Theme.AppCompat.NoActionBar">
-                  <activity
-                      android:name=".MainActivity"
-                      android:exported="true"
-                      android:launchMode="singleTop"
-                      android:theme="@style/Theme.AppCompat.NoActionBar"
-                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
-                      android:hardwareAccelerated="true"
-                      android:windowSoftInputMode="adjustResize">
-                      <meta-data
-                          android:name="io.flutter.embedding.android.NormalTheme"
-                          android:resource="@style/NormalTheme" />
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-                  <meta-data
-                      android:name="flutterEmbedding"
-                      android:value="2" />
-              </application>
-          </manifest>
-          EOF
-
-          # Update build.gradle
-          sed -i "s/applicationId \".*\"/applicationId \"com.web2apk.${package_name}\"/g" android/app/build.gradle
-          sed -i "s/versionName .*/versionName \"1.0.0\"/g" android/app/build.gradle
-          sed -i "s/versionCode .*/versionCode 1/g" android/app/build.gradle
-
-          # Set minSdkVersion ke 21 (Android 5.0)
-          sed -i 's/minSdkVersion .*/minSdkVersion 21/g' android/app/build.gradle
-
-          flutter pub get
+          
+          # Update AndroidManifest
+          sed -i 's/<uses-permission android:name="android.permission.INTERNET"\/>//g' android/app/src/main/AndroidManifest.xml
+          sed -i '/<application/a\    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
+          sed -i '/<application/a\    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />' android/app/src/main/AndroidManifest.xml
+          
+          # Update package name
+          sed -i "s/applicationId \".*\"/applicationId \"${{ inputs.package_name }}\"/g" android/app/build.gradle
+          
           cd ..
 
       - name: Move Project to Workspace
         run: |
           cd workspace
-          if [ -d "project" ]; then
-            mv project/* ./
-            rm -rf project
-          elif [ -d "webview_project" ]; then
+          if [ -d "webview_project" ]; then
             mv webview_project/* ./
             rm -rf webview_project
           fi
           ls -la
 
       # ============================================
-      # 3. BUILD APK
+      # BUILD APK
       # ============================================
       - name: Clean Build
         run: |
@@ -317,15 +210,31 @@ jobs:
       - name: Build Release APK
         run: |
           cd workspace
-          flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64,android-x64
+          flutter build apk --release --split-per-abi
 
-      - name: Build Debug APK (fallback)
-        if: failure()
+      - name: Check Build Output
         run: |
-          cd workspace
-          flutter build apk --debug
+          echo "📂 Checking build output..."
+          ls -la workspace/build/app/outputs/flutter-apk/ || echo "No output!"
+          find workspace -name "*.apk" || echo "No APK found!"
 
-      - name: Upload APK ke Telegram
+      # ============================================
+      # UPLOAD ARTIFACT - PASTIKAN INI ADA!
+      # ============================================
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-builds
+          path: |
+            workspace/build/app/outputs/flutter-apk/*.apk
+          retention-days: 7
+          if-no-files-found: warn
+
+      # ============================================
+      # KIRIM KE TELEGRAM (FALLBACK)
+      # ============================================
+      - name: Kirim APK ke Telegram
+        if: success()
         uses: appleboy/telegram-action@master
         with:
           to: ${{ inputs.user_id }}
@@ -335,28 +244,11 @@ jobs:
 
             📱 Nama: ${{ inputs.app_name }}
             📦 Package: ${{ inputs.package_name }}
-            🏗️ Status: Release
 
             📤 Mengirim APK...
           document: workspace/build/app/outputs/flutter-apk/app-release.apk
 
-      - name: Upload Split APKs (jika gagal)
-        if: failure()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ inputs.user_id }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          message: |
-            ⚠️ *Build Debug*
-
-            📱 Nama: ${{ inputs.app_name }}
-            📦 Package: ${{ inputs.package_name }}
-            🏗️ Status: Debug
-
-            📤 Mengirim APK Debug...
-          document: workspace/build/app/outputs/flutter-apk/app-debug.apk
-
-      - name: Upload ARM64 APK
+      - name: Kirim APK Split (ARM64)
         if: success()
         uses: appleboy/telegram-action@master
         with:
@@ -364,46 +256,13 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           document: workspace/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
 
-      - name: Upload ARMEABI APK
+      - name: Kirim APK Split (ARMv7)
         if: success()
         uses: appleboy/telegram-action@master
         with:
           to: ${{ inputs.user_id }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           document: workspace/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
-
-      - name: Upload X86_64 APK
-        if: success()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ inputs.user_id }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          document: workspace/build/app/outputs/flutter-apk/app-x86_64-release.apk
-
-      - name: Simpan Artefak
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: apk-builds
-          path: workspace/build/app/outputs/flutter-apk/*.apk
-          retention-days: 7
-
-      # ============================================
-      # 4. CLEANUP & NOTIFICATION
-      # ============================================
-      - name: Notifikasi Sukses
-        if: success()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.ADMIN_CHAT_ID }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          message: |
-            ✅ *Build Berhasil*
-
-            📱 Nama: ${{ inputs.app_name }}
-            👤 User: ${{ inputs.user_id }}
-            📦 Package: ${{ inputs.package_name }}
-            ⏱️ Waktu: $(date)
 
       - name: Notifikasi Gagal
         if: failure()
@@ -417,20 +276,5 @@ jobs:
             📱 Nama: ${{ inputs.app_name }}
             👤 User: ${{ inputs.user_id }}
             📦 Package: ${{ inputs.package_name }}
-            ⏱️ Waktu: $(date)
 
-            🔍 Cek log untuk detail error.
-
-      - name: Kirim Log Error
-        if: failure()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ inputs.user_id }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          message: |
-            ❌ *Build Gagal*
-
-            📱 Nama: ${{ inputs.app_name }}
-
-            Mohon periksa project Anda dan coba lagi.
-            Hubungi support jika masalah berlanjut.
+            🔍 Cek log GitHub Actions untuk detail.
