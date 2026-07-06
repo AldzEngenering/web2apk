@@ -1,4 +1,4 @@
-name: Build APK from URL
+name: Build Flutter APK
 
 on:
   workflow_dispatch:
@@ -9,24 +9,19 @@ on:
       package_name:
         description: 'Package Name'
         required: true
-      url:
-        description: 'Website URL'
+      zip_url:
+        description: 'ZIP URL Project'
         required: true
       user_id:
         description: 'User ID'
         required: true
 
 jobs:
-  build:
+  build-flutter:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -37,15 +32,28 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build WebView APK
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: 'stable'
+
+      - name: Download Project
         run: |
-          echo "Building WebView APK for ${{ inputs.app_name }}"
-          echo "URL: ${{ inputs.url }}"
-          echo "Package: ${{ inputs.package_name }}"
-          echo "APK content for ${{ inputs.app_name }}" > app.apk
+          mkdir project
+          cd project
+          wget -O project.zip "${{ github.event.inputs.zip_url }}"
+          unzip -q project.zip
+          rm project.zip
+
+      - name: Build APK
+        working-directory: project
+        run: |
+          flutter pub get
+          flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.app_name }}
-          path: app.apk
+          path: project/build/app/outputs/apk/release/app-release.apk
