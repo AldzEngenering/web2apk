@@ -5,20 +5,24 @@ on:
     inputs:
       url:
         description: 'Website URL'
-        required: true
+        required: false
         type: string
       app_name:
         description: 'Nama Aplikasi'
         required: true
         type: string
       package_name:
-        description: 'Package Name (contoh: com.web2apk.myapp)'
+        description: 'Package Name'
         required: true
         type: string
       user_id:
         description: 'Telegram User ID'
         required: true
         type: string
+      zip_url:
+        description: 'URL ZIP Flutter Project (opsional)'
+        required: false
+        type: string  # ← HARUS ADA!
 
 jobs:
   build:
@@ -26,9 +30,6 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      # ============================================================
-      # SETUP ENVIRONMENT
-      # ============================================================
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -55,16 +56,14 @@ jobs:
           sudo apt-get install -y wget unzip curl
 
       # ============================================================
-      # BUILD APK
+      # BUILD DARI URL (WEBSITE)
       # ============================================================
-      - name: Create Flutter Project
+      - name: Build from URL
+        if: ${{ inputs.url != '' && inputs.url != 'null' }}
         run: |
           flutter create --org com.web2apk --project-name myapp myapp
           cd myapp
 
-      - name: Configure pubspec.yaml
-        run: |
-          cd myapp
           cat > pubspec.yaml << 'EOF'
           name: myapp
           description: WebView App
@@ -88,9 +87,6 @@ jobs:
             uses-material-design: true
           EOF
 
-      - name: Create main.dart
-        run: |
-          cd myapp
           cat > lib/main.dart << 'EOF'
           import 'package:flutter/material.dart';
           import 'package:webview_flutter/webview_flutter.dart';
@@ -134,9 +130,6 @@ jobs:
                     onPageFinished: (url) {
                       setState(() => isLoading = false);
                     },
-                    onWebResourceError: (error) {
-                      print('Error: ${error.description}');
-                    },
                   ),
                 )
                 ..loadRequest(Uri.parse('${{ inputs.url }}'));
@@ -161,9 +154,6 @@ jobs:
           }
           EOF
 
-      - name: Configure Android Manifest
-        run: |
-          cd myapp
           cat > android/app/src/main/AndroidManifest.xml << 'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="${{ inputs.package_name }}">
@@ -193,18 +183,36 @@ jobs:
           </manifest>
           EOF
 
-      - name: Configure build.gradle
-        run: |
-          cd myapp
           sed -i "s/applicationId \".*\"/applicationId \"${{ inputs.package_name }}\"/g" android/app/build.gradle
           sed -i "s/minSdkVersion .*/minSdkVersion 21/g" android/app/build.gradle
           sed -i "s/targetSdkVersion .*/targetSdkVersion 34/g" android/app/build.gradle
           sed -i "s/versionCode .*/versionCode 1/g" android/app/build.gradle
           sed -i "s/versionName .*/versionName \"1.0.0\"/g" android/app/build.gradle
 
-      - name: Build APK
+          flutter pub get
+          flutter clean
+          flutter build apk --release
+
+      # ============================================================
+      # BUILD DARI ZIP (FLUTTER PROJECT)
+      # ============================================================
+      - name: Build from ZIP
+        if: ${{ inputs.zip_url != '' && inputs.zip_url != 'null' }}
         run: |
-          cd myapp
+          mkdir -p workspace
+          cd workspace
+          wget -O project.zip "${{ inputs.zip_url }}"
+          unzip -o project.zip -d project/
+          
+          if [ -f "project/pubspec.yaml" ]; then
+            cd project
+          elif [ -f "project/*/pubspec.yaml" ]; then
+            cd project/*/
+          else
+            echo "❌ pubspec.yaml tidak ditemukan!"
+            exit 1
+          fi
+          
           flutter pub get
           flutter clean
           flutter build apk --release
@@ -217,7 +225,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: apk-builds
-          path: myapp/build/app/outputs/flutter-apk/*.apk
+          path: |
+            myapp/build/app/outputs/flutter-apk/*.apk
+            workspace/project/build/app/outputs/flutter-apk/*.apk
           retention-days: 7
 
       - name: Send APK to Telegram
@@ -231,8 +241,6 @@ jobs:
 
             📱 Nama: ${{ inputs.app_name }}
             📦 Package: ${{ inputs.package_name }}
-            🌐 URL: ${{ inputs.url }}
-
             📤 Mengirim APK...
           document: myapp/build/app/outputs/flutter-apk/app-release.apk
 
