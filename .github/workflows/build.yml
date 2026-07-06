@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'Website URL (untuk WebView)'
+        description: 'Website URL'
         required: false
         type: string
       app_name:
@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       package_name:
-        description: 'Package Name (com.example.app)'
+        description: 'Package Name'
         required: true
         type: string
       user_id:
@@ -20,29 +20,37 @@ on:
         required: true
         type: string
       zip_url:
-        description: 'URL ZIP Project Flutter'
+        description: 'URL ZIP Flutter'
         required: false
         type: string
 
 env:
   JAVA_VERSION: '17'
-  FLUTTER_VERSION: '3.24.0'
+  FLUTTER_VERSION: '3.22.4'  # Ganti ke versi stabil
 
 jobs:
   build:
-    name: Build APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Flutter Doctor
+        run: flutter doctor -v
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -52,88 +60,83 @@ jobs:
             platforms;android-34
             build-tools;34.0.0
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: 'stable'
-          cache: true
-
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build cmake git wget unzip jq curl
 
       # ============================================
-      # PREPARE PROJECT
+      # BUILD WEBSITE TO APK
       # ============================================
-      - name: Create Project Directory
-        run: mkdir -p workspace
-
-      - name: Download Flutter Project (if ZIP)
-        if: ${{ inputs.zip_url != '' && inputs.zip_url != 'null' }}
-        run: |
-          cd workspace
-          wget -O project.zip "${{ inputs.zip_url }}"
-          unzip -o project.zip -d project/
-          # Cari pubspec.yaml
-          if [ -f "project/pubspec.yaml" ]; then
-            echo "✅ Flutter project ditemukan"
-            mv project/* ./
-          elif [ -f "project/*/pubspec.yaml" ]; then
-            echo "✅ Flutter project ditemukan di subfolder"
-            find project -name "pubspec.yaml" -exec dirname {} \; | head -1 | xargs -I {} mv {}/* ./
-          else
-            echo "❌ pubspec.yaml tidak ditemukan!"
-            exit 1
-          fi
-          rm -rf project
-          ls -la
-
-      - name: Create WebView Project (if URL)
+      - name: Build APK from URL
         if: ${{ inputs.url != '' && inputs.url != 'null' }}
         run: |
-          cd workspace
-          flutter create --org com.web2apk --project-name "${{ inputs.app_name }}" webview_project
-          cd webview_project
+          # Buat project Flutter baru
+          flutter create --org com.web2apk --project-name "${{ inputs.app_name }}" webview_app
+          cd webview_app
           
-          # Tambahkan webview_flutter
-          echo "" >> pubspec.yaml
-          echo "dependencies:" >> pubspec.yaml
-          echo "  flutter:" >> pubspec.yaml
-          echo "    sdk: flutter" >> pubspec.yaml
-          echo "  webview_flutter: ^4.8.0" >> pubspec.yaml
-          
-          flutter pub get
-          
-          # Buat main.dart dengan WebView
+          # ==========================================
+          # PERBAIKAN PUBSPEC.YAML
+          # ==========================================
+          cat > pubspec.yaml << 'EOF'
+          name: ${{ inputs.app_name }}
+          description: WebView App
+          publish_to: 'none'
+          version: 1.0.0+1
+
+          environment:
+            sdk: '>=3.0.0 <4.0.0'
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            webview_flutter: ^4.8.0
+
+          dev_dependencies:
+            flutter_test:
+              sdk: flutter
+            flutter_lints: ^3.0.0
+
+          flutter:
+            uses-material-design: true
+          EOF
+
+          # ==========================================
+          # PERBAIKAN MAIN.DART
+          # ==========================================
           cat > lib/main.dart << 'EOF'
           import 'package:flutter/material.dart';
           import 'package:webview_flutter/webview_flutter.dart';
-          
-          void main() => runApp(MyApp());
-          
+
+          void main() {
+            runApp(const MyApp());
+          }
+
           class MyApp extends StatelessWidget {
+            const MyApp({super.key});
+
             @override
             Widget build(BuildContext context) {
               return MaterialApp(
                 title: '${{ inputs.app_name }}',
                 theme: ThemeData.dark(),
-                home: WebViewScreen(),
+                home: const WebViewScreen(),
                 debugShowCheckedModeBanner: false,
               );
             }
           }
-          
+
           class WebViewScreen extends StatefulWidget {
+            const WebViewScreen({super.key});
+
             @override
-            _WebViewScreenState createState() => _WebViewScreenState();
+            State<WebViewScreen> createState() => _WebViewScreenState();
           }
-          
+
           class _WebViewScreenState extends State<WebViewScreen> {
             late final WebViewController controller;
-            bool _isLoading = true;
-            
+            bool isLoading = true;
+
             @override
             void initState() {
               super.initState();
@@ -142,24 +145,32 @@ jobs:
                 ..setBackgroundColor(const Color(0x00000000))
                 ..setNavigationDelegate(
                   NavigationDelegate(
+                    onProgress: (int progress) {
+                      if (progress == 100) {
+                        setState(() => isLoading = false);
+                      }
+                    },
                     onPageFinished: (String url) {
-                      setState(() => _isLoading = false);
+                      setState(() => isLoading = false);
+                    },
+                    onWebResourceError: (WebResourceError error) {
+                      print('WebView Error: ${error.description}');
                     },
                   ),
                 )
                 ..loadRequest(Uri.parse('${{ inputs.url }}'));
             }
-            
+
             @override
             Widget build(BuildContext context) {
               return Scaffold(
                 body: Stack(
                   children: [
                     WebViewWidget(controller: controller),
-                    if (_isLoading)
+                    if (isLoading)
                       Container(
                         color: Colors.black,
-                        child: Center(
+                        child: const Center(
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
@@ -167,7 +178,10 @@ jobs:
                                 valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
                               ),
                               SizedBox(height: 20),
-                              Text('Loading...', style: TextStyle(color: Colors.white70)),
+                              Text(
+                                'Loading...',
+                                style: TextStyle(color: Colors.white70),
+                              ),
                             ],
                           ),
                         ),
@@ -178,60 +192,75 @@ jobs:
             }
           }
           EOF
-          
-          # Update AndroidManifest
-          sed -i 's/<uses-permission android:name="android.permission.INTERNET"\/>//g' android/app/src/main/AndroidManifest.xml
-          sed -i '/<application/a\    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
-          sed -i '/<application/a\    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />' android/app/src/main/AndroidManifest.xml
-          
-          # Update package name
+
+          # ==========================================
+          # PERBAIKAN ANDROID MANIFEST
+          # ==========================================
+          cat > android/app/src/main/AndroidManifest.xml << 'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="${{ inputs.package_name }}">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <application
+                  android:label="${{ inputs.app_name }}"
+                  android:name="${applicationName}"
+                  android:icon="@mipmap/ic_launcher"
+                  android:usesCleartextTraffic="true"
+                  android:allowBackup="true"
+                  android:theme="@style/Theme.AppCompat.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:theme="@style/Theme.AppCompat.NoActionBar"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <meta-data
+                          android:name="io.flutter.embedding.android.NormalTheme"
+                          android:resource="@style/NormalTheme" />
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <meta-data
+                      android:name="flutterEmbedding"
+                      android:value="2" />
+              </application>
+          </manifest>
+          EOF
+
+          # ==========================================
+          # UPDATE BUILD.GRADLE
+          # ==========================================
           sed -i "s/applicationId \".*\"/applicationId \"${{ inputs.package_name }}\"/g" android/app/build.gradle
-          
-          cd ..
+          sed -i "s/minSdkVersion .*/minSdkVersion 21/g" android/app/build.gradle
+          sed -i "s/targetSdkVersion .*/targetSdkVersion 34/g" android/app/build.gradle
+          sed -i "s/versionCode .*/versionCode 1/g" android/app/build.gradle
+          sed -i "s/versionName .*/versionName \"1.0.0\"/g" android/app/build.gradle
 
-      - name: Move Project to Workspace
-        run: |
-          cd workspace
-          if [ -d "webview_project" ]; then
-            mv webview_project/* ./
-            rm -rf webview_project
-          fi
-          ls -la
-
-      # ============================================
-      # BUILD APK
-      # ============================================
-      - name: Clean Build
-        run: |
-          cd workspace
-          flutter clean
+          # ==========================================
+          # GET DEPENDENCIES & BUILD
+          # ==========================================
           flutter pub get
-
-      - name: Build Release APK
-        run: |
-          cd workspace
+          flutter clean
           flutter build apk --release --split-per-abi
 
-      - name: Check Build Output
-        run: |
-          echo "📂 Checking build output..."
-          ls -la workspace/build/app/outputs/flutter-apk/ || echo "No output!"
-          find workspace -name "*.apk" || echo "No APK found!"
-
       # ============================================
-      # UPLOAD ARTIFACT - PASTIKAN INI ADA!
+      # UPLOAD ARTIFACT
       # ============================================
-      - name: Upload APK Artifact
+      - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: apk-builds
           path: |
-            workspace/build/app/outputs/flutter-apk/*.apk
+            webview_app/build/app/outputs/flutter-apk/*.apk
           retention-days: 7
-          if-no-files-found: warn
 
       # ============================================
-      # KIRIM KE TELEGRAM (FALLBACK)
+      # KIRIM KE TELEGRAM
       # ============================================
       - name: Kirim APK ke Telegram
         if: success()
@@ -246,23 +275,7 @@ jobs:
             📦 Package: ${{ inputs.package_name }}
 
             📤 Mengirim APK...
-          document: workspace/build/app/outputs/flutter-apk/app-release.apk
-
-      - name: Kirim APK Split (ARM64)
-        if: success()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ inputs.user_id }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          document: workspace/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
-
-      - name: Kirim APK Split (ARMv7)
-        if: success()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ inputs.user_id }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          document: workspace/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+          document: webview_app/build/app/outputs/flutter-apk/app-release.apk
 
       - name: Notifikasi Gagal
         if: failure()
@@ -277,4 +290,5 @@ jobs:
             👤 User: ${{ inputs.user_id }}
             📦 Package: ${{ inputs.package_name }}
 
-            🔍 Cek log GitHub Actions untuk detail.
+            🔍 Cek log di:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
