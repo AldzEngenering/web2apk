@@ -20,9 +20,9 @@ on:
         required: true
         type: string
       zip_url:
-        description: 'URL ZIP Flutter Project (opsional)'
+        description: 'URL ZIP Flutter Project'
         required: false
-        type: string  # ← HARUS ADA!
+        type: string
 
 jobs:
   build:
@@ -50,20 +50,38 @@ jobs:
             platforms;android-34
             build-tools;34.0.0
 
+      # ============================================================
+      # 🔥 FIX: Install Tools dengan retry dan verbose
+      # ============================================================
       - name: Install Tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget unzip curl
+          echo "📦 Updating package list..."
+          sudo apt-get update -y || echo "⚠️ Update failed, continuing..."
+          
+          echo "📦 Installing required packages..."
+          sudo apt-get install -y \
+            wget \
+            unzip \
+            curl \
+            ninja-build \
+            cmake \
+            git \
+            jq || echo "⚠️ Some packages failed, continuing..."
+          
+          echo "✅ Tools installed successfully!"
+          which wget unzip curl ninja cmake git jq || echo "⚠️ Some tools not found"
 
       # ============================================================
-      # BUILD DARI URL (WEBSITE)
+      # BUILD DARI URL
       # ============================================================
       - name: Build from URL
         if: ${{ inputs.url != '' && inputs.url != 'null' }}
         run: |
+          echo "📱 Creating Flutter project..."
           flutter create --org com.web2apk --project-name myapp myapp
           cd myapp
 
+          echo "📝 Configuring pubspec.yaml..."
           cat > pubspec.yaml << 'EOF'
           name: myapp
           description: WebView App
@@ -87,6 +105,7 @@ jobs:
             uses-material-design: true
           EOF
 
+          echo "📝 Creating main.dart..."
           cat > lib/main.dart << 'EOF'
           import 'package:flutter/material.dart';
           import 'package:webview_flutter/webview_flutter.dart';
@@ -154,6 +173,7 @@ jobs:
           }
           EOF
 
+          echo "📝 Configuring Android Manifest..."
           cat > android/app/src/main/AndroidManifest.xml << 'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="${{ inputs.package_name }}">
@@ -183,22 +203,31 @@ jobs:
           </manifest>
           EOF
 
+          echo "📝 Configuring build.gradle..."
           sed -i "s/applicationId \".*\"/applicationId \"${{ inputs.package_name }}\"/g" android/app/build.gradle
           sed -i "s/minSdkVersion .*/minSdkVersion 21/g" android/app/build.gradle
           sed -i "s/targetSdkVersion .*/targetSdkVersion 34/g" android/app/build.gradle
           sed -i "s/versionCode .*/versionCode 1/g" android/app/build.gradle
           sed -i "s/versionName .*/versionName \"1.0.0\"/g" android/app/build.gradle
 
+          echo "📦 Getting dependencies..."
           flutter pub get
+
+          echo "🧹 Cleaning..."
           flutter clean
+
+          echo "🔨 Building APK..."
           flutter build apk --release
 
+          echo "✅ Build complete!"
+
       # ============================================================
-      # BUILD DARI ZIP (FLUTTER PROJECT)
+      # BUILD DARI ZIP
       # ============================================================
       - name: Build from ZIP
         if: ${{ inputs.zip_url != '' && inputs.zip_url != 'null' }}
         run: |
+          echo "📦 Downloading ZIP..."
           mkdir -p workspace
           cd workspace
           wget -O project.zip "${{ inputs.zip_url }}"
@@ -209,13 +238,20 @@ jobs:
           elif [ -f "project/*/pubspec.yaml" ]; then
             cd project/*/
           else
-            echo "❌ pubspec.yaml tidak ditemukan!"
+            echo "❌ pubspec.yaml not found!"
             exit 1
           fi
           
+          echo "📦 Getting dependencies..."
           flutter pub get
+          
+          echo "🧹 Cleaning..."
           flutter clean
+          
+          echo "🔨 Building APK..."
           flutter build apk --release
+          
+          echo "✅ Build complete!"
 
       # ============================================================
       # UPLOAD & SEND
